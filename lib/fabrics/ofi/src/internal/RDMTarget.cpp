@@ -70,6 +70,10 @@ namespace mxl::lib::fabrics::ofi
 
         auto mxlRegions = MxlRegions::forWriter(config.writer);
         auto protocol = selectIngressProtocol(mxlRegions.dataLayout(), mxlRegions.regions(), mxlRegions.maxSyncBatchSize());
+
+        // A connected target starts the protocol when its peer arrives; a connectionless one has no such moment.
+        protocol->start(endpoint);
+
         auto targetInfo = std::make_unique<TargetInfo>(
             endpoint.id(), endpoint.localAddress(), *provider, protocol->registerMemory(domain), protocol->bounceBufferInfo());
 
