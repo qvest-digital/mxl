@@ -18,9 +18,11 @@
 #include "AddressVector.hpp"
 #include "CompletionQueue.hpp"
 #include "Endpoint.hpp"
+#include "EventQueue.hpp"
 #include "Exception.hpp"
 #include "Fabric.hpp"
 #include "FabricInfoHelpers.hpp"
+#include "QueueHelpers.hpp"
 #include "Region.hpp"
 #include "TargetInfo.hpp"
 #include "VariantUtils.hpp"
@@ -149,6 +151,8 @@ namespace mxl::lib::fabrics::ofi
         auto av = AddressVector::open(endpoint.domain());
         endpoint.bind(av);
 
+        endpoint.bind(EventQueue::open(fabric));
+
         endpoint.enable();
 
         auto regions = MxlRegions::forReader(config.reader);
@@ -227,6 +231,7 @@ namespace mxl::lib::fabrics::ofi
     {
         activateIdleEndpoints();
         pollCQ();
+        drainEventQueue(*_endpoint.eventQueue());
         return afterProgressResult();
     }
 
@@ -257,6 +262,7 @@ namespace mxl::lib::fabrics::ofi
         {
             pollCQ();
         }
+        drainEventQueue(*_endpoint.eventQueue());
 
         return afterProgressResult();
     }
