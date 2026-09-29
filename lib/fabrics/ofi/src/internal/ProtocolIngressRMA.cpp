@@ -154,7 +154,11 @@ namespace mxl::lib::fabrics::ofi
         }
 
         auto const header = _bounceBuffer.unpack(*immData, _region);
-        return std::make_optional<Target::SampleReadResult>(header.headIndex, header.count);
+        if (!header)
+        {
+            return {};
+        }
+        return std::make_optional<Target::SampleReadResult>(header->headIndex, header->count);
     }
 
     bool RMASampleIngressProtocol::canReadGrains() const noexcept

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstring>
 #include <bit>
+#include <mxl-internal/Logging.hpp>
 #include "Exception.hpp"
 
 namespace mxl::lib::fabrics::ofi
@@ -82,12 +83,23 @@ namespace mxl::lib::fabrics::ofi
         return _entries.empty() ? 0 : _entries.front().size();
     }
 
-    AudioEntryHeader const& AudioBounceBuffer::unpack(std::size_t entryIndex, Region const& outRegion) const
+    std::optional<AudioEntryHeader> AudioBounceBuffer::unpack(std::size_t entryIndex, Region const& outRegion) const
     {
         auto const& entry = _entries.at(entryIndex);
         auto const* header = entry.header();
 
         auto const maxCountPerEntry = (entrySize() - sizeof(AudioEntryHeader)) / (_layout.channelCount * _layout.sampleSize);
+
+        if ((header->count == 0) || (header->count > _layout.bufferLength))
+        {
+            // Count 0: the header has not arrived yet, from an initiator that splits an entry over writes the provider does not order.
+            if (header->count != 0)
+            {
+                MXL_WARN(
+                    "Skipping an audio entry whose header counts {} samples, more than the ring holds ({}).", header->count, _layout.bufferLength);
+            }
+            return std::nullopt;
+        }
 
         if (header->count > maxCountPerEntry)
         {

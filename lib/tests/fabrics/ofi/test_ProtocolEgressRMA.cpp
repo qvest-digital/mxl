@@ -60,9 +60,10 @@ TEST_CASE("ofi: audio staging copy unpacks into a ring at a different position",
     auto target = std::vector<Sample>(ChannelCount * TargetBufferLength, UntouchedSample);
     auto const outRegion = Region{
         reinterpret_cast<std::uintptr_t>(target.data()), target.size() * sizeof(Sample), nullptr, nullptr, Region::Location::host()};
-    auto const& unpackedHeader = bounceBuffer.unpack(0, outRegion);
-    REQUIRE(unpackedHeader.headIndex == HeadIndex);
-    REQUIRE(unpackedHeader.count == SampleCount);
+    auto const unpackedHeader = bounceBuffer.unpack(0, outRegion);
+    REQUIRE(unpackedHeader.has_value());
+    REQUIRE(unpackedHeader->headIndex == HeadIndex);
+    REQUIRE(unpackedHeader->count == SampleCount);
     REQUIRE(target == expectedTarget);
 }
 
