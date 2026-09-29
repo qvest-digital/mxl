@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include "Region.hpp"
 
 namespace mxl::lib::fabrics::ofi
@@ -82,8 +83,9 @@ namespace mxl::lib::fabrics::ofi
         /** \brief Copy the samples from the bounce buffer entry to the provided output region, and return the header of the entry.
          *
          * Internally the header will be used to correctly map the bounce buffer entry slices to the output region slices.
+         * \return The header, or nothing if it counts no samples or more than the ring holds. Nothing is copied then.
          */
-        AudioEntryHeader const& unpack(std::size_t entryIndex, Region const& outRegion) const;
+        std::optional<AudioEntryHeader> unpack(std::size_t entryIndex, Region const& outRegion) const;
 
         static void getMutableMultiBufferSlices(std::uint64_t index, std::size_t count, std::size_t bufferLength, std::size_t sampleWordSize,
             std::size_t channelCount, std::uint8_t* baseBufferPtr, mxlMutableWrappedMultiBufferSlice& slice) noexcept;
