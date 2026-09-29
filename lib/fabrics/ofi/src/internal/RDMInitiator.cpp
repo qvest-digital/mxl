@@ -19,9 +19,11 @@
 #include "AddressVector.hpp"
 #include "CompletionQueue.hpp"
 #include "Endpoint.hpp"
+#include "EventQueue.hpp"
 #include "Exception.hpp"
 #include "Fabric.hpp"
 #include "FabricInfoHelpers.hpp"
+#include "QueueHelpers.hpp"
 #include "Region.hpp"
 #include "TargetInfo.hpp"
 #include "VariantUtils.hpp"
@@ -152,6 +154,13 @@ namespace mxl::lib::fabrics::ofi
         auto av = AddressVector::open(endpoint.domain());
         endpoint.bind(av);
 
+        // Without an event queue, the EFA provider calls abort() for any
+        // failure it cannot attach to an operation of ours -- its peer
+        // handshake, the replies of its emulated write protocols. A peer
+        // that restarts causes exactly that, and took this whole process
+        // down with it.
+        endpoint.bind(EventQueue::open(fabric));
+
         endpoint.enable();
 
         auto regions = MxlRegions::forReader(config.reader);
@@ -230,6 +239,7 @@ namespace mxl::lib::fabrics::ofi
     {
         activateIdleEndpoints();
         pollCQ();
+        drainEventQueue(*_endpoint.eventQueue());
         return afterProgressResult();
     }
 
@@ -260,6 +270,7 @@ namespace mxl::lib::fabrics::ofi
         {
             pollCQ();
         }
+        drainEventQueue(*_endpoint.eventQueue());
 
         return afterProgressResult();
     }
