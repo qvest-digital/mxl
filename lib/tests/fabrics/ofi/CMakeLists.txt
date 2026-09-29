@@ -27,6 +27,7 @@ target_sources(mxl-fabrics-ofi-tests
             test_Domain.cpp
             test_Provider.cpp
             test_ProviderConfig.cpp
+            test_ProtocolEgressRMA.cpp
             test_Region.cpp
             test_DataLayout.cpp
             test_SliceRange.cpp

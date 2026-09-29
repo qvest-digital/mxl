@@ -9,6 +9,7 @@
 #include "DataLayout.hpp"
 #include "Endpoint.hpp"
 #include "Protocol.hpp"
+#include "RegisteredRegion.hpp"
 
 namespace mxl::lib::fabrics::ofi
 {
@@ -80,7 +81,7 @@ namespace mxl::lib::fabrics::ofi
     {
     public:
         /** \copydoc EgressProtocol::registerMemory()
-         * \note With this protocol, the audio entry headers will get registered.
+         * \note With this protocol, the staging copy of the bounce buffer entries will get registered.
          */
         virtual void registerMemory(std::shared_ptr<Domain> domain) final;
 
@@ -108,6 +109,16 @@ namespace mxl::lib::fabrics::ofi
          */
         virtual std::size_t reset() final;
 
+        /** \brief Copy the samples of a transfer into a staging entry, channel after channel, in the order the target unpacks them.
+         * \param[in] layout The audio data layout of the source ring.
+         * \param[in] headIndex The head index of the audio samples to transfer.
+         * \param[in] count The number of samples per channel to transfer.
+         * \param[in] region The local region corresponding to the user provided audio region.
+         * \param[out] dst Where the samples of the first channel go. Must hold count samples of every channel.
+         */
+        static void copySamples(DataLayout::Continuous const& layout, std::uint64_t headIndex, std::size_t count, LocalRegion const& region,
+            std::uint8_t* dst);
+
     private:
         friend class RMASampleEgressProtocolTemplate;
 
@@ -115,29 +126,17 @@ namespace mxl::lib::fabrics::ofi
         RMASampleEgressProtocol(Completion::Token token, TargetInfo info, DataLayout::Continuous dataLayout, LocalRegion _localRegion,
             std::size_t bounceBufferEntryCount);
 
-        /** \brief Create the scatter-gather list for a given audio region and data layout. This will be used for the remote write transfer. The list
-         * will be created based on the head index and count of samples to transfer.
-         * \param layout The audio data layout.
-         * \param headIndex The head index of the audio samples to transfer.
-         * \param count The number of samples per channel to transfer.
-         * \param region The local region corresponding to the user provided audio region. This is used to calculate the addresses for the
-         * scatter-gather list entries.
-         * \return A vector of local regions representing the scatter-gather list for the transfer.
-         */
-        static std::vector<LocalRegion> makeScatterGatherList(DataLayout::Continuous const& layout, std::uint64_t headIndex, std::size_t count,
-            LocalRegion const& region);
-
     private:
         Completion::Token _token;
         TargetInfo _remoteInfo;
         DataLayout::Continuous _layout;
-        LocalRegion _localRegion;                     /**< Registered local region corresponding to the user provided audio region.  */
-        std::vector<AudioEntryHeader> _entryHeaders;  /**< A vector of audio entry headers used for the bounce buffer. This is needed to keep track of
-                                                        the metadata of each bounce buffer entry. */
-        std::vector<LocalRegion> _entryHeaderRegions; /**< A vector of local regions corresponding to the entry headers. These regions are registered
-                                                         and used for remote writes to the bounce buffer. */
+        LocalRegion _localRegion;           /**< Registered local region corresponding to the user provided audio region.  */
+        std::vector<std::uint8_t> _staging; /**< One registered copy of each remote bounce buffer entry, header and samples, so a transfer is a
+                                               single write. */
+        std::optional<RegisteredRegion> _stagingRegistration; /**< Registration of _staging, released with this protocol. */
+        std::optional<LocalRegion> _stagingRegion;            /**< _staging as a local region carrying the registration's descriptor. */
         std::size_t _pending = 0;
-        std::uint32_t _bounceBufferEntryIndex{0};     /**< The index of the bounce buffer entry to use for the next transfer. */
+        std::uint32_t _bounceBufferEntryIndex{0};             /**< The index of the bounce buffer entry to use for the next transfer. */
         std::size_t _bounceBufferEntryCount; /**< The total number of bounce buffer entries. Used to wrap around the bounce buffer entry index. */
     };
 
