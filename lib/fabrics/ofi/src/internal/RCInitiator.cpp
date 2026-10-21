@@ -288,7 +288,8 @@ namespace mxl::lib::fabrics::ofi
         return Idle{.ep = Endpoint::create(old.domain(), old.id(), old.info()), .idleSince = std::chrono::steady_clock::now()};
     }
 
-    std::unique_ptr<RCInitiator> RCInitiator::setup(mxlFabricsInitiatorConfig const& config, FabricInfoView info)
+    std::unique_ptr<RCInitiator> RCInitiator::setup(mxlFabricsInitiatorConfig const& config, FabricInfoView info,
+        InitiatorSetupOptions const& options)
     {
         requireCapability(info, FI_WRITE, "Interface is missing required write capability");
         MXL_DEBUG("{}", fi_tostr(info.raw(), FI_TYPE_INFO));
@@ -304,9 +305,10 @@ namespace mxl::lib::fabrics::ofi
         // send-queue depth rather than by the completion queue -- the verbs
         // provider says as much in a comment where it creates the hardware
         // queue. Leaving the completion queue at the small default let an
-        // initiator post far more than it could hold.
+        // initiator post far more than it could hold. An explicit cqDepth
+        // option still takes precedence.
         auto cqAttr = CompletionQueue::Attributes::defaults();
-        cqAttr.size = std::max(cqAttr.size, info.txSize());
+        cqAttr.size = options.cqDepth.value_or(std::max(cqAttr.size, info.txSize()));
         auto cq = CompletionQueue::open(domain, cqAttr);
 
         auto regions = MxlRegions::forReader(config.reader);

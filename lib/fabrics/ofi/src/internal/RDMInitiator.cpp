@@ -128,7 +128,8 @@ namespace mxl::lib::fabrics::ofi
             _state);
     }
 
-    std::unique_ptr<RDMInitiator> RDMInitiator::setup(mxlFabricsInitiatorConfig const& config, FabricInfoView info)
+    std::unique_ptr<RDMInitiator> RDMInitiator::setup(mxlFabricsInitiatorConfig const& config, FabricInfoView info,
+        InitiatorSetupOptions const& options)
     {
         requireCapability(info, FI_WRITE, "Interface is missing required remote write capability");
 
@@ -137,9 +138,10 @@ namespace mxl::lib::fabrics::ofi
         // connected ones -- EFA offers 4096 against the default of 8 -- and
         // a completion queue that cannot hold what the endpoint accepts
         // stops the provider taking work as soon as it is full. Every write
-        // then fails with EAGAIN and nothing ever completes to free it.
+        // then fails with EAGAIN and nothing ever completes to free it. An
+        // explicit cqDepth option still takes precedence.
         auto cqAttr = CompletionQueue::Attributes::defaults();
-        cqAttr.size = std::max(cqAttr.size, info.txSize());
+        cqAttr.size = options.cqDepth.value_or(std::max(cqAttr.size, info.txSize()));
         if (config.interface.provider == MXL_FABRICS_PROVIDER_EFA)
         {
             if (!CompletionQueue::isWaitObjectSupportedForEFA())

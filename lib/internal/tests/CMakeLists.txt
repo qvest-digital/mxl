@@ -50,10 +50,6 @@ if (NOT TARGET picojson::picojson)
     find_package(picojson REQUIRED)
 endif()
 
-if (NOT TARGET PcapPlusPlus::Pcap++)
-    find_package(PcapPlusPlus CONFIG)
-endif()
-
 
 target_link_libraries(mxl-internal-tests
         PRIVATE
@@ -63,13 +59,6 @@ target_link_libraries(mxl-internal-tests
             picojson::picojson
             Catch2::Catch2WithMain
     )
-
-if (TARGET PcapPlusPlus::Pcap++)
-    target_link_libraries(mxl-internal-tests
-            PRIVATE
-                PcapPlusPlus::Pcap++
-        )
-endif()
 
 # Enable testing using CTest
 include(CTest)
