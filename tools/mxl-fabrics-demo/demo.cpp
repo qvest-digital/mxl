@@ -820,6 +820,16 @@ public:
                 return status;
             }
 
+            // The target set the valid slices the transfer carried in the grain header. Opening the grain clears them, so they are read
+            // first and committed as they arrived.
+            mxlGrainInfo arrived;
+            status = mxlFlowWriterGetGrainInfo(_writer, grainIndex, &arrived);
+            if (status != MXL_STATUS_OK)
+            {
+                MXL_ERROR("Failed to get grain info with status '{}'", static_cast<int>(status));
+                return status;
+            }
+
             // Here we open so that we can commit, we are not going to modify the grain as it was already modified by the initiator.
             status = mxlFlowWriterOpenGrain(_writer, grainIndex, &grainInfo, &dummyPayload);
             if (status != MXL_STATUS_OK)
@@ -827,6 +837,7 @@ public:
                 MXL_ERROR("Failed to open grain with status '{}'", static_cast<int>(status));
                 return status;
             }
+            grainInfo.validSlices = arrived.validSlices;
 
             // GrainInfo and media payload was already written by the remote endpoint, we simply commit!.
             status = mxlFlowWriterCommitGrain(_writer, &grainInfo);
