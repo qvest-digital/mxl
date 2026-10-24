@@ -15,6 +15,11 @@ namespace mxl::lib::fabrics::ofi
         class WritePacker
         {
         public:
+            /** \brief Start with no writes.
+             * \param srcRing The whole source ring.
+             * \param dstRing The whole destination ring.
+             * \param limits The limits every write respects.
+             */
             WritePacker(LocalRegion const& srcRing, RemoteRegion const& dstRing, WriteLimits const& limits)
                 : _srcRing{srcRing}
                 , _dstRing{dstRing}
@@ -23,6 +28,9 @@ namespace mxl::lib::fabrics::ofi
             {}
 
             /** \brief Copy length bytes from srcOffset in the source ring to dstOffset in the destination ring.
+             * \param srcOffset Byte offset in the source ring.
+             * \param dstOffset Byte offset in the destination ring.
+             * \param length Number of bytes.
              */
             void append(std::uint64_t srcOffset, std::uint64_t dstOffset, std::size_t length)
             {
@@ -87,12 +95,12 @@ namespace mxl::lib::fabrics::ofi
             }
 
         private:
-            LocalRegion _srcRing;
-            RemoteRegion _dstRing;
-            WriteLimits _limits;
-            std::vector<SampleWrite> _writes;
-            SampleWrite _current;
-            std::size_t _length;
+            LocalRegion _srcRing;             /**< The whole source ring. */
+            RemoteRegion _dstRing;            /**< The whole destination ring. */
+            WriteLimits _limits;              /**< The limits every write respects. */
+            std::vector<SampleWrite> _writes; /**< The writes closed so far. */
+            SampleWrite _current;             /**< The write being filled. */
+            std::size_t _length;              /**< Bytes in the write being filled. */
         };
     }
 

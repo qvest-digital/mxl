@@ -53,6 +53,17 @@ namespace mxl::lib::fabrics::ofi
             root["bounceBufferInfo"] = picojson::value(bounceBufferInfoObj);
         }
 
+        if (continuous)
+        {
+            auto continuousObj = picojson::object{};
+            continuousObj["version"] = picojson::value(std::to_string(continuous->version));
+            continuousObj["sampleSize"] = picojson::value(std::to_string(continuous->sampleSize));
+            continuousObj["channelCount"] = picojson::value(std::to_string(continuous->channelCount));
+            continuousObj["bufferLength"] = picojson::value(std::to_string(continuous->bufferLength));
+            continuousObj["descriptorCount"] = picojson::value(std::to_string(continuous->descriptorCount));
+            root["continuous"] = picojson::value(continuousObj);
+        }
+
         root["id"] = picojson::value(std::to_string(id));
         root["provider"] = picojson::value{fmt::to_string(provider)};
 
@@ -100,13 +111,32 @@ namespace mxl::lib::fabrics::ofi
             bounceBufferInfo = std::make_optional<TargetInfoBounceBufferInfo>(entryCount, entrySize);
         }
 
+        auto continuous = std::optional<TargetInfoContinuous>{std::nullopt};
+        if (root.contains("continuous"))
+        {
+            auto const continuousObj = root.at("continuous").get<picojson::object>();
+            continuous = TargetInfoContinuous{
+                .version = static_cast<std::uint32_t>(std::stoul(continuousObj.at("version").get<std::string>())),
+                .sampleSize = std::stoull(continuousObj.at("sampleSize").get<std::string>()),
+                .channelCount = std::stoull(continuousObj.at("channelCount").get<std::string>()),
+                .bufferLength = std::stoull(continuousObj.at("bufferLength").get<std::string>()),
+                .descriptorCount = std::stoull(continuousObj.at("descriptorCount").get<std::string>()),
+            };
+        }
+
         auto const id = std::stoull(root.at("id").get<std::string>());
         auto const provider = providerFromString(root.at("provider").get<std::string>()).value_or(Provider::ANY);
-        return {.id = id, .fabricAddress = fabricAddress, .provider = provider, .remoteRegions = regions, .bounceBufferInfo = bounceBufferInfo};
+        return {.id = id,
+            .fabricAddress = fabricAddress,
+            .provider = provider,
+            .remoteRegions = regions,
+            .bounceBufferInfo = bounceBufferInfo,
+            .continuous = continuous};
     }
 
     bool TargetInfo::operator==(TargetInfo const& other) const noexcept
     {
-        return (fabricAddress == other.fabricAddress) && (remoteRegions == other.remoteRegions) && (id == other.id);
+        return (fabricAddress == other.fabricAddress) && (remoteRegions == other.remoteRegions) && (id == other.id) &&
+               (continuous == other.continuous);
     }
 }

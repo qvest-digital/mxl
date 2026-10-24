@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "RCTarget.hpp"
-
 #include <algorithm>
 #include <mxl-internal/Logging.hpp>
 #include <rdma/fabric.h>
@@ -43,9 +42,9 @@ namespace mxl::lib::fabrics::ofi
         auto pep = makeListener(fabric);
 
         auto const mxlRegions = MxlRegions::forWriter(config.writer);
-        auto proto = selectIngressProtocol(mxlRegions.dataLayout(), mxlRegions.regions(), mxlRegions.maxSyncBatchSize());
+        auto proto = selectIngressProtocol(mxlRegions.dataLayout(), mxlRegions.regions());
         auto targetInfo = std::make_unique<TargetInfo>(
-            pep.id(), pep.localAddress(), *provider, proto->registerMemory(domain), proto->bounceBufferInfo());
+            pep.id(), pep.localAddress(), *provider, proto->registerMemory(domain), std::nullopt, proto->continuousInfo());
 
         // Helper struct to enable the std::make_unique function to access the private constructor of this class.
         struct MakeUniqueEnabler : RCTarget
@@ -100,10 +99,10 @@ namespace mxl::lib::fabrics::ofi
 
                             auto cqAttr = CompletionQueue::Attributes::defaults();
                             // The receive window can put that many completions in the queue
-                        // before anything reads it, so the queue must be able to
-                        // hold them however its depth was chosen.
-                        cqAttr.size = std::max(_setupOptions.cqDepth.value_or(CompletionQueue::Attributes::DEFAULT_SIZE),
-                            2 * DefaultReceiveDepth);
+                            // before anything reads it, so the queue must be able to
+                            // hold them however its depth was chosen.
+                            cqAttr.size = std::max(_setupOptions.cqDepth.value_or(CompletionQueue::Attributes::DEFAULT_SIZE),
+                                2 * DefaultReceiveDepth);
                             auto cq = CompletionQueue::open(_domain, cqAttr);
                             auto endpoint = Endpoint::create(_domain, state.pep.id(), event->connReq().info());
                             endpoint.bind(cq, FI_RECV);

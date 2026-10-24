@@ -74,7 +74,7 @@ namespace mxl::lib::fabrics::ofi
         endpoint.enable();
 
         auto mxlRegions = MxlRegions::forWriter(config.writer);
-        auto protocol = selectIngressProtocol(mxlRegions.dataLayout(), mxlRegions.regions(), mxlRegions.maxSyncBatchSize());
+        auto protocol = selectIngressProtocol(mxlRegions.dataLayout(), mxlRegions.regions());
 
         // Start receiving. The connected path does this once the peer
         // arrives; a connectionless endpoint has no such moment, and
@@ -90,7 +90,7 @@ namespace mxl::lib::fabrics::ofi
         protocol->start(endpoint);
 
         auto targetInfo = std::make_unique<TargetInfo>(
-            endpoint.id(), endpoint.localAddress(), *provider, protocol->registerMemory(domain), protocol->bounceBufferInfo());
+            endpoint.id(), endpoint.localAddress(), *provider, protocol->registerMemory(domain), std::nullopt, protocol->continuousInfo());
 
         struct MakeUniqueEnabler : RDMTarget
         {

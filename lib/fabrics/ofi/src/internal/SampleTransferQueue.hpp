@@ -151,9 +151,9 @@ namespace mxl::lib::fabrics::ofi
         void releaseSlots() noexcept;
 
     private:
-        Ordering _ordering;
-        std::size_t _maxCount;
-        std::size_t _descriptorCount;
+        Ordering _ordering;                        /**< How the endpoint orders writes. */
+        std::size_t _maxCount;                     /**< The most samples per channel in one batch. */
+        std::size_t _descriptorCount;              /**< The number of descriptor slots on the target. */
 
         std::optional<std::uint64_t> _acceptedEnd; /**< End of the last batch accepted. */
         std::optional<Range> _pending;             /**< Samples accepted and not yet planned. */

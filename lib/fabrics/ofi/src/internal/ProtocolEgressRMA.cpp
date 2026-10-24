@@ -4,7 +4,9 @@
 
 #include "ProtocolEgressRMA.hpp"
 #include <cstring>
+#include <algorithm>
 #include <mxl-internal/Logging.hpp>
+#include <rdma/fi_errno.h>
 #include "AudioBounceBuffer.hpp"
 #include "DataLayout.hpp"
 #include "Exception.hpp"
@@ -84,7 +86,7 @@ namespace mxl::lib::fabrics::ofi
         throw Exception::invalidState("transferSamples is not supported in RMAGrainEgressProtocol.");
     }
 
-    void RMAGrainEgressProtocol::processCompletion(Completion::Data const&)
+    void RMAGrainEgressProtocol::processCompletion(Endpoint const&, Completion::Data const&, ::fi_addr_t)
     {
         if (_pending > 0)
         {
@@ -92,7 +94,7 @@ namespace mxl::lib::fabrics::ofi
         }
     }
 
-    void RMAGrainEgressProtocol::processCompletionError(Completion::Error const&)
+    void RMAGrainEgressProtocol::processCompletionError(Endpoint const&, Completion::Error const&, ::fi_addr_t)
     {
         if (_pending > 0)
         {
@@ -143,8 +145,149 @@ namespace mxl::lib::fabrics::ofi
         return std::make_unique<MakeUniqueEnabler>(token, std::move(remoteInfo), _layout, *_localRegions);
     }
 
+    class RMASampleEgressProtocol::EndpointSink final : public SampleTransferQueue::Sink
+    {
+    public:
+        EndpointSink(RMASampleEgressProtocol& protocol, Endpoint const& ep, ::fi_addr_t destAddr)
+            : _protocol{protocol}
+            , _ep{ep}
+            , _destAddr{destAddr}
+        {}
+
+        std::vector<SampleWrite> plan(std::uint64_t headIndex, std::size_t count) override
+        {
+            return planSampleWrites(
+                _protocol._layout, _protocol._localRegion, _protocol._remoteLayout, _protocol._remoteRing, headIndex, count, _protocol._limits);
+        }
+
+        std::pair<SampleWrite, std::uint32_t> describe(std::uint64_t headIndex, std::size_t count, std::size_t slot) override
+        {
+            // The queue reuses a slot only once the write that last sent it has completed.
+            _protocol._descriptors[slot] = AudioEntryHeader{.headIndex = headIndex, .count = count};
+
+            auto const offset = slot * sizeof(AudioEntryHeader);
+            auto write = SampleWrite{
+                .local = {_protocol._descriptorRegion->sub(offset, sizeof(AudioEntryHeader))},
+                .remote = {_protocol._remoteDescriptors.sub(offset, sizeof(AudioEntryHeader))},
+            };
+            auto const immData = ImmDataSample{slot, headIndex}.data();
+            return {std::move(write), immData};
+        }
+
+        void post(SampleWrite const& write, std::optional<std::uint32_t> immData) override
+        {
+            _ep.write(_protocol._token, write.local, write.remote, _destAddr, immData);
+        }
+
+    private:
+        RMASampleEgressProtocol& _protocol; /**< The protocol whose layouts, regions and descriptors the writes use. */
+        Endpoint const& _ep;                /**< The endpoint the writes are posted on. */
+        ::fi_addr_t _destAddr;              /**< The target's address. Ignored on connected endpoints. */
+    };
+
     RMASampleEgressProtocol::RMASampleEgressProtocol(Completion::Token token, TargetInfo info, DataLayout::Continuous layout, LocalRegion localRegion,
-        std::size_t bounceBufferEntryCount)
+        WriteLimits limits, SampleTransferQueue::Ordering ordering)
+        : _token{token}
+        , _remoteInfo{std::move(info)}
+        , _layout{layout}
+        , _remoteLayout{.sampleSize = _remoteInfo.continuous->sampleSize,
+              .channelCount = _remoteInfo.continuous->channelCount,
+              .bufferLength = _remoteInfo.continuous->bufferLength}
+        , _localRegion{localRegion}
+        , _remoteRing{_remoteInfo.remoteRegions.at(0)}
+        , _remoteDescriptors{_remoteInfo.remoteRegions.at(1)}
+        , _limits{limits}
+        , _descriptors(_remoteInfo.continuous->descriptorCount)
+        , _descriptorRegistration{}
+        , _descriptorRegion{}
+        , _queue{ordering, std::min(_remoteLayout.bufferLength / 2, _layout.bufferLength), _remoteInfo.continuous->descriptorCount}
+    {}
+
+    void RMASampleEgressProtocol::registerMemory(std::shared_ptr<Domain> domain)
+    {
+        if (_descriptorRegistration)
+        {
+            throw Exception::invalidState("Memory already registered.");
+        }
+
+        // Registered here rather than on the domain, which keeps what it registers until it closes: the descriptors go with the target.
+        auto const region = Region{reinterpret_cast<std::uintptr_t>(_descriptors.data()),
+            _descriptors.size() * sizeof(AudioEntryHeader),
+            nullptr,
+            nullptr,
+            Region::Location::host()};
+        _descriptorRegistration.emplace(MemoryRegion::reg(*domain, region, FI_WRITE), region);
+        _descriptorRegion = _descriptorRegistration->toLocal();
+    }
+
+    void RMASampleEgressProtocol::transferGrain(Endpoint const&, std::uint64_t, std::uint64_t, std::uint32_t, SliceRange const&, ::fi_addr_t)
+    {
+        throw Exception::invalidState("transferGrain is not supported in RMASampleEgressProtocol.");
+    }
+
+    void RMASampleEgressProtocol::transferSamples(Endpoint const& ep, std::uint64_t headIndex, std::size_t count, ::fi_addr_t destAddr)
+    {
+        if (!_descriptorRegion)
+        {
+            throw Exception::invalidState("Cannot transfer before memory is registered.");
+        }
+
+        _queue.push(headIndex, count);
+        auto sink = EndpointSink{*this, ep, destAddr};
+        _queue.pump(sink);
+    }
+
+    void RMASampleEgressProtocol::processCompletion(Endpoint const& ep, Completion::Data const&, ::fi_addr_t destAddr)
+    {
+        _queue.complete();
+        pumpAfterCompletion(ep, destAddr);
+    }
+
+    void RMASampleEgressProtocol::processCompletionError(Endpoint const& ep, Completion::Error const&, ::fi_addr_t destAddr)
+    {
+        _queue.fail();
+        pumpAfterCompletion(ep, destAddr);
+    }
+
+    void RMASampleEgressProtocol::pumpAfterCompletion(Endpoint const& ep, ::fi_addr_t destAddr)
+    {
+        try
+        {
+            auto sink = EndpointSink{*this, ep, destAddr};
+            _queue.pump(sink);
+        }
+        // The writes stay queued, and the next transfer or completion posts them. Nothing is thrown from here: the initiators call this from
+        // inside their endpoint state machines, which an exception would leave without a state. A failure that persists reaches the
+        // application through the next transfer.
+        catch (FabricException const& e)
+        {
+            if (e.fiErrno() == -FI_EAGAIN)
+            {
+                MXL_DEBUG("Audio writes deferred after a completion: {}", e.what());
+            }
+            else
+            {
+                MXL_ERROR("Failed to post audio writes after a completion: {}", e.what());
+            }
+        }
+        catch (Exception const& e)
+        {
+            MXL_ERROR("Failed to post audio writes after a completion: {}", e.what());
+        }
+    }
+
+    bool RMASampleEgressProtocol::hasPendingWork() const
+    {
+        return _queue.hasPendingWork();
+    }
+
+    std::size_t RMASampleEgressProtocol::reset()
+    {
+        return _queue.reset();
+    }
+
+    RMASampleBounceEgressProtocol::RMASampleBounceEgressProtocol(Completion::Token token, TargetInfo info, DataLayout::Continuous layout,
+        LocalRegion localRegion, std::size_t bounceBufferEntryCount)
         : _token{token}
         , _remoteInfo{std::move(info)}
         , _layout{layout}
@@ -153,7 +296,7 @@ namespace mxl::lib::fabrics::ofi
         , _bounceBufferEntryCount{bounceBufferEntryCount}
     {}
 
-    std::size_t RMASampleEgressProtocol::stagingSize(TargetInfo const& info, std::size_t entryCount)
+    std::size_t RMASampleBounceEgressProtocol::stagingSize(TargetInfo const& info, std::size_t entryCount)
     {
         // The geometry comes from the target, and it is now an allocation and a pinned registration per target rather than a header per entry.
         constexpr auto maxStagingSize = std::size_t{256} * 1024 * 1024;
@@ -168,7 +311,7 @@ namespace mxl::lib::fabrics::ofi
         return entryCount * entrySize;
     }
 
-    void RMASampleEgressProtocol::registerMemory(std::shared_ptr<Domain> domain)
+    void RMASampleBounceEgressProtocol::registerMemory(std::shared_ptr<Domain> domain)
     {
         if (_staging.empty())
         {
@@ -182,12 +325,12 @@ namespace mxl::lib::fabrics::ofi
         _stagingRegion = _stagingRegistration->toLocal();
     }
 
-    void RMASampleEgressProtocol::transferGrain(Endpoint const&, std::uint64_t, std::uint64_t, std::uint32_t, SliceRange const&, ::fi_addr_t)
+    void RMASampleBounceEgressProtocol::transferGrain(Endpoint const&, std::uint64_t, std::uint64_t, std::uint32_t, SliceRange const&, ::fi_addr_t)
     {
-        throw Exception::invalidState("transferGrain is not supported in RMASampleEgressProtocol.");
+        throw Exception::invalidState("transferGrain is not supported in RMASampleBounceEgressProtocol.");
     }
 
-    void RMASampleEgressProtocol::transferSamples(Endpoint const& ep, std::uint64_t headIndex, std::size_t count, ::fi_addr_t destAddr)
+    void RMASampleBounceEgressProtocol::transferSamples(Endpoint const& ep, std::uint64_t headIndex, std::size_t count, ::fi_addr_t destAddr)
     {
         if ((count == 0) || (count > _layout.bufferLength))
         {
@@ -202,7 +345,8 @@ namespace mxl::lib::fabrics::ofi
         {
             if (!_saturated)
             {
-                MXL_WARN("All {} bounce buffer entries of a target are in flight, skipping its transfers until one completes.", _bounceBufferEntryCount);
+                MXL_WARN("All {} bounce buffer entries of a target are in flight, skipping its transfers until one completes.",
+                    _bounceBufferEntryCount);
                 _saturated = true;
             }
             return;
@@ -236,7 +380,7 @@ namespace mxl::lib::fabrics::ofi
         _bounceBufferEntryIndex = (_bounceBufferEntryIndex + 1) % _bounceBufferEntryCount;
     }
 
-    void RMASampleEgressProtocol::processCompletion(Completion::Data const&)
+    void RMASampleBounceEgressProtocol::processCompletion(Endpoint const&, Completion::Data const&, ::fi_addr_t)
     {
         if (_pending > 0)
         {
@@ -244,7 +388,7 @@ namespace mxl::lib::fabrics::ofi
         }
     }
 
-    void RMASampleEgressProtocol::processCompletionError(Completion::Error const&)
+    void RMASampleBounceEgressProtocol::processCompletionError(Endpoint const&, Completion::Error const&, ::fi_addr_t)
     {
         if (_pending > 0)
         {
@@ -252,21 +396,21 @@ namespace mxl::lib::fabrics::ofi
         }
     }
 
-    bool RMASampleEgressProtocol::hasPendingWork() const
+    bool RMASampleBounceEgressProtocol::hasPendingWork() const
     {
         return _pending > 0;
     }
 
-    std::size_t RMASampleEgressProtocol::reset()
+    std::size_t RMASampleBounceEgressProtocol::reset()
     {
         return std::exchange(_pending, 0);
     }
 
-    void RMASampleEgressProtocol::copySamples(DataLayout::Continuous const& layout, std::uint64_t headIndex, std::size_t count,
+    void RMASampleBounceEgressProtocol::copySamples(DataLayout::Continuous const& layout, std::uint64_t headIndex, std::size_t count,
         LocalRegion const& region, std::uint8_t* dst)
     {
         auto slice = mxlMutableWrappedMultiBufferSlice{};
-        AudioBounceBuffer::getMutableMultiBufferSlices(headIndex,
+        getMutableMultiBufferSlices(headIndex,
             count,
             layout.bufferLength,
             layout.sampleSize,
@@ -292,6 +436,9 @@ namespace mxl::lib::fabrics::ofi
     RMASampleEgressProtocolTemplate::RMASampleEgressProtocolTemplate(DataLayout::Continuous layout, Region region)
         : _layout{layout}
         , _region{region}
+        , _localRegion{}
+        , _limits{.iovLimit = 1, .rmaIovLimit = 1, .maxMsgSize = 0}
+        , _ordering{SampleTransferQueue::Ordering::Gated}
     {}
 
     void RMASampleEgressProtocolTemplate::registerMemory(std::shared_ptr<Domain> domain)
@@ -306,12 +453,14 @@ namespace mxl::lib::fabrics::ofi
             throw Exception::invalidState("No memory should be previously registered.");
         }
 
-        // Register the audio region provided by the user. When the actual protocol instance is created, the protocol will register additional
-        // regions for the bounce buffer entry headers, but we can only do that once we have the actual protocol instance since the bounce buffer
-        // entry count is a parameter of the protocol instance.
+        // Register the source ring. Every target's writes read straight from it.
         domain->registerRegion(_region, FI_WRITE);
-
         _localRegion = domain->localRegions().front();
+
+        // Connected endpoints place writes in the order they are posted; connectionless ones, EFA among them, do not.
+        auto const info = domain->fabric()->info();
+        _limits = WriteLimits{.iovLimit = info.txIovLimit(), .rmaIovLimit = info.rmaIovLimit(), .maxMsgSize = info.maxMsgSize()};
+        _ordering = (info.endpointType() == FI_EP_MSG) ? SampleTransferQueue::Ordering::Ordered : SampleTransferQueue::Ordering::Gated;
     }
 
     std::unique_ptr<EgressProtocol> RMASampleEgressProtocolTemplate::createInstance(Completion::Token token, TargetInfo remoteInfo)
@@ -321,19 +470,56 @@ namespace mxl::lib::fabrics::ofi
             throw Exception::invalidState("Cannot create protocol before memory is registered.");
         }
 
-        if (!remoteInfo.bounceBufferInfo)
+        if (remoteInfo.continuous)
         {
-            throw Exception::invalidArgument("Remote target does not have bounce buffer info required for sample egress protocol.");
+            auto const& remote = *remoteInfo.continuous;
+            if (remote.version != TargetInfoContinuous::ProtocolVersion)
+            {
+                throw Exception::invalidArgument("The target speaks audio write protocol version {}, this initiator speaks {}.",
+                    remote.version,
+                    TargetInfoContinuous::ProtocolVersion);
+            }
+            if ((remote.sampleSize != _layout.sampleSize) || (remote.channelCount != _layout.channelCount) || (remote.bufferLength < 2) ||
+                (remote.descriptorCount == 0) || (remote.descriptorCount > 65536U) || (remoteInfo.remoteRegions.size() != 2) ||
+                (remoteInfo.remoteRegions[0].len < (remote.sampleSize * remote.channelCount * remote.bufferLength)) ||
+                (remoteInfo.remoteRegions[1].len < (remote.descriptorCount * sizeof(AudioEntryHeader))))
+            {
+                throw Exception::invalidArgument("The target's audio ring does not match the source flow: {} channels of {} samples of {} bytes "
+                                                 "against {} channels of {} bytes, {} descriptor slots, {} remote regions.",
+                    remote.channelCount,
+                    remote.bufferLength,
+                    remote.sampleSize,
+                    _layout.channelCount,
+                    _layout.sampleSize,
+                    remote.descriptorCount,
+                    remoteInfo.remoteRegions.size());
+            }
+
+            struct MakeUniqueEnabler : RMASampleEgressProtocol
+            {
+                MakeUniqueEnabler(Completion::Token token, TargetInfo info, DataLayout::Continuous layout, LocalRegion localRegion,
+                    WriteLimits limits, SampleTransferQueue::Ordering ordering)
+                    : RMASampleEgressProtocol{token, std::move(info), layout, localRegion, limits, ordering}
+                {}
+            };
+
+            return std::make_unique<MakeUniqueEnabler>(token, std::move(remoteInfo), _layout, *_localRegion, _limits, _ordering);
         }
 
-        struct MakeUniqueEnabler : RMASampleEgressProtocol
+        if (remoteInfo.bounceBufferInfo)
         {
-            MakeUniqueEnabler(Completion::Token token, TargetInfo info, DataLayout::Continuous layout, LocalRegion localRegion,
-                std::uint32_t bounceBufferEntryCount)
-                : RMASampleEgressProtocol{token, std::move(info), layout, localRegion, bounceBufferEntryCount}
-            {}
-        };
+            struct MakeUniqueEnabler : RMASampleBounceEgressProtocol
+            {
+                MakeUniqueEnabler(Completion::Token token, TargetInfo info, DataLayout::Continuous layout, LocalRegion localRegion,
+                    std::size_t bounceBufferEntryCount)
+                    : RMASampleBounceEgressProtocol{token, std::move(info), layout, localRegion, bounceBufferEntryCount}
+                {}
+            };
 
-        return std::make_unique<MakeUniqueEnabler>(token, std::move(remoteInfo), _layout, *_localRegion, remoteInfo.bounceBufferInfo->entryCount);
-    };
+            auto const entryCount = remoteInfo.bounceBufferInfo->entryCount;
+            return std::make_unique<MakeUniqueEnabler>(token, std::move(remoteInfo), _layout, *_localRegion, entryCount);
+        }
+
+        throw Exception::invalidArgument("The target publishes no audio layout, it cannot receive samples.");
+    }
 }

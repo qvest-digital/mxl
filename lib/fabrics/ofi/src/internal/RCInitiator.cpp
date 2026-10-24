@@ -4,10 +4,10 @@
 
 #include "RCInitiator.hpp"
 #include <cassert>
-#include <exception>
 #include <chrono>
 #include <cstdint>
 #include <algorithm>
+#include <exception>
 #include <ranges>
 #include <uuid.h>
 #include <mxl-internal/Logging.hpp>
@@ -248,7 +248,7 @@ namespace mxl::lib::fabrics::ofi
                 },
                 [&](Connected state) -> State
                 {
-                    _proto->processCompletion(completion);
+                    _proto->processCompletion(state.ep, completion);
                     return state;
                 },
                 [](Flushing state) -> State
@@ -277,9 +277,9 @@ namespace mxl::lib::fabrics::ofi
                 flushing->pending--;
             }
         }
-        else if (std::holds_alternative<Connected>(_state))
+        else if (auto* connected = std::get_if<Connected>(&_state); connected != nullptr)
         {
-            _proto->processCompletionError(err);
+            _proto->processCompletionError(connected->ep, err);
         }
     }
 

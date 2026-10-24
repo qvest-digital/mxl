@@ -87,7 +87,7 @@ The `caps.flags` field is a bitmask of `mxlFabricsInterfaceCapFlags` values:
 
 | Flag | Description |
 | --- | --- |
-| `MXL_FABRICS_IFACE_CAP_REMOTE_WRITE` | The interface supports remote write (RDMA) operations. This is the preferred transfer mode: the initiator writes directly into the target's memory without involvement from the target side. (For continuous flows, on the target side there is still a copy operation from a temporary buffer into the correct memory locations in the ring buffer. |
+| `MXL_FABRICS_IFACE_CAP_REMOTE_WRITE` | The interface supports remote write (RDMA) operations. This is the preferred transfer mode: the initiator writes directly into the target's memory without involvement from the target side. |
 | `MXL_FABRICS_IFACE_CAP_SEND_RECEIVE` | The interface supports send/receive message operations. Used as a fallback when remote write is unavailable. Requires a bounce buffer and an extra memory copy on the target side. |
 | `MXL_FABRICS_IFACE_CAP_BLOCKING_OPERATIONS` | The interface supports blocking wait operations (`mxlFabricsTargetReadGrain()`, `mxlFabricsInitiatorMakeProgressBlocking()`). |
 

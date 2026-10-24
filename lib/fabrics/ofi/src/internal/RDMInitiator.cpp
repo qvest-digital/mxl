@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "RDMInitiator.hpp"
-#include <algorithm>
 #include <cassert>
-#include <exception>
 #include <chrono>
 #include <cstdint>
+#include <algorithm>
+#include <exception>
 #include <memory>
 #include <utility>
 #include <variant>
@@ -104,7 +104,7 @@ namespace mxl::lib::fabrics::ofi
             _state);
     }
 
-    void RDMInitiatorTarget::handleCompletion(Endpoint&, Completion completion)
+    void RDMInitiatorTarget::handleCompletion(Endpoint& ep, Completion completion)
     {
         if (auto const error = completion.tryErr(); error)
         {
@@ -112,9 +112,9 @@ namespace mxl::lib::fabrics::ofi
             // kept the target reporting pending work for the rest of its
             // life.
             MXL_ERROR("Completion error: {}", error->toString());
-            if (std::holds_alternative<Activated>(_state))
+            if (auto const* state = std::get_if<Activated>(&_state); state != nullptr)
             {
-                _proto->processCompletionError(*error);
+                _proto->processCompletionError(ep, *error, state->fiAddr);
             }
             return;
         }
@@ -122,7 +122,7 @@ namespace mxl::lib::fabrics::ofi
         std::visit(
             overloaded{
                 [](Idle const&) {},
-                [&](Activated const&) { _proto->processCompletion(completion.data()); },
+                [&](Activated const& state) { _proto->processCompletion(ep, completion.data(), state.fiAddr); },
                 [](Done const&) {},
             },
             _state);

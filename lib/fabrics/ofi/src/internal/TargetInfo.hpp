@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include "mxl/fabrics.h"
 #include "Address.hpp"
@@ -19,6 +21,26 @@ namespace mxl::lib::fabrics::ofi
     {
         std::size_t entryCount; /**< Number of entries in the bounce buffer. */
         std::size_t entrySize;  /**< Size of each bounce buffer entry in bytes. */
+    };
+
+    /** \brief Layout of a target's audio ring, published so an initiator can write samples straight into it.
+     *
+     * A target that publishes it has two remote regions: the first is its ring, channel-major with bufferLength samples per channel, and the
+     * second holds descriptorCount AudioEntryHeader descriptor slots. An initiator writes a batch of samples into the ring, then writes
+     * {headIndex, count} into a slot with immediate data built by ImmDataSample.
+     */
+    struct TargetInfoContinuous
+    {
+        /** \brief The version of the audio write protocol described here. An initiator refuses a target with another version. */
+        constexpr static std::uint32_t ProtocolVersion = 1;
+
+        std::uint32_t version;       /**< Version of the audio write protocol the target speaks. */
+        std::size_t sampleSize;      /**< Size of one sample in bytes. */
+        std::size_t channelCount;    /**< Number of channels. */
+        std::size_t bufferLength;    /**< Samples per channel in the ring. */
+        std::size_t descriptorCount; /**< Number of descriptor slots. */
+
+        bool operator==(TargetInfoContinuous const&) const noexcept = default;
     };
 
     /** \brief TargetInfo contains all the information required by an initiator to operate transfers to the given target.
@@ -56,6 +78,8 @@ namespace mxl::lib::fabrics::ofi
         Provider provider;              /**< Remote targets provider */
         std::vector<RemoteRegion>
             remoteRegions; /**< Target's memory regions (and keys) which an initiator can operate on. This is used only for RMA operations */
-        std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo; /**< Information about the bounce buffer on the target, if the target uses one.*/
+        std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo; /**< Information about the bounce buffer on the target, if the target uses one.
+                                                                       Only targets that predate TargetInfoContinuous publish it. */
+        std::optional<TargetInfoContinuous> continuous;             /**< Layout of the target's audio ring, if the target receives audio. */
     };
 }

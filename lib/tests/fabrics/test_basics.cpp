@@ -595,7 +595,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: Transfer Sa
         {
             waitForTransferStart([&]() { mxlFabricsTargetReadSamplesNonBlocking(target, &dummyIndex, &dummyCount); },
                 [&]() { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressNonBlocking(initiator); }, "initiator"); },
-                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 0, 480); });
+                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 480, 480); });
 
             waitForTransferCompletion([&]()
                 { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressNonBlocking(initiator); }, "initiator"); },
@@ -607,7 +607,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: Transfer Sa
             waitForTransferStart([&]() { mxlFabricsTargetReadSamples(target, BLOCKING_WAIT.count(), &dummyIndex, &dummyCount); },
                 [&]()
                 { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count()); }, "initiator"); },
-                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 0, 480); });
+                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 480, 480); });
 
             waitForTransferCompletion([&]()
                 { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count()); }, "initiator"); },
@@ -660,7 +660,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: Transfer Sa
         {
             waitForTransferStart([&]() { mxlFabricsTargetReadSamplesNonBlocking(target, &dummyIndex, &dummyCount); },
                 [&]() { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressNonBlocking(initiator); }, "initiator"); },
-                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 0, 480); });
+                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 480, 480); });
 
             waitForTransferCompletion([&]()
                 { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressNonBlocking(initiator); }, "initiator"); },
@@ -672,7 +672,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: Transfer Sa
             waitForTransferStart([&]() { mxlFabricsTargetReadSamples(target, BLOCKING_WAIT.count(), &dummyIndex, &dummyCount); },
                 [&]()
                 { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count()); }, "initiator"); },
-                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 0, 480); });
+                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 480, 480); });
 
             waitForTransferCompletion([&]()
                 { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count()); }, "initiator"); },
@@ -992,7 +992,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: Transfer Sa
                 targets,
                 [&](auto& target) { mxlFabricsTargetReadSamplesNonBlocking(target, &dummyIndex, &dummyCount); },
                 [&]() { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressNonBlocking(initiator); }, "initiator"); },
-                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 0, 480); });
+                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 480, 480); });
 
             waitForAllTransfersCompletion(
                 targets,
@@ -1007,7 +1007,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: Transfer Sa
                 [&](auto& target) { mxlFabricsTargetReadSamples(target, BLOCKING_WAIT.count(), &dummyIndex, &dummyCount); },
                 [&]()
                 { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count()); }, "initiator"); },
-                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 0, 480); });
+                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 480, 480); });
 
             waitForAllTransfersCompletion(
                 targets,
@@ -1075,7 +1075,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: Transfer Sa
                 targets,
                 [&](auto& target) { mxlFabricsTargetReadSamplesNonBlocking(target, &dummyIndex, &dummyCount); },
                 [&]() { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressNonBlocking(initiator); }, "initiator"); },
-                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 0, 480); });
+                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 480, 480); });
 
             waitForAllTransfersCompletion(
                 targets,
@@ -1090,7 +1090,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: Transfer Sa
                 [&](auto& target) { mxlFabricsTargetReadSamples(target, BLOCKING_WAIT.count(), &dummyIndex, &dummyCount); },
                 [&]()
                 { requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count()); }, "initiator"); },
-                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 0, 480); });
+                [&]() { return mxlFabricsInitiatorTransferSamples(initiator, 480, 480); });
 
             waitForAllTransfersCompletion(
                 targets,
@@ -1167,6 +1167,88 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: TargetInfo 
     REQUIRE(*targetInfoIn == *targetInfoOut);
 
     // Cleanup
+    REQUIRE(mxlFabricsDestroyTarget(fabrics, target) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsDestroyInstance(fabrics) == MXL_STATUS_OK);
+    REQUIRE(mxlReleaseFlowWriter(instance, writer) == MXL_STATUS_OK);
+    REQUIRE(mxlDestroyInstance(instance) == MXL_STATUS_OK);
+}
+
+TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: TargetInfo carries the audio ring layout", "[fabrics][ofi][target-info]")
+{
+    namespace ofi = mxl::lib::fabrics::ofi;
+
+    auto instance = mxlCreateInstance(domain.c_str(), "");
+    mxlFabricsInstance fabrics;
+    mxlFabricsTarget target;
+    mxlFabricsTargetInfo targetInfo;
+
+    REQUIRE(mxlFabricsCreateInstance(instance, nullptr, &fabrics) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsCreateTarget(fabrics, &target) == MXL_STATUS_OK);
+
+    auto flowDef = mxl::tests::readFile("../data/audio_flow.json");
+    mxlFlowWriter writer;
+    auto flowConfig = mxlFlowConfigInfo{};
+    REQUIRE(mxlCreateFlowWriter(instance, flowDef.c_str(), nullptr, &writer, &flowConfig, nullptr) == MXL_STATUS_OK);
+
+    auto config = mxlFabricsTargetConfig{
+        .version = MXL_FABRICS_API_VERSION,
+        .interface = {.version = MXL_FABRICS_API_VERSION,
+                      .provider = MXL_FABRICS_PROVIDER_TCP,
+                      .caps =
+                {
+                    .version = MXL_FABRICS_API_VERSION,
+                    .flags = MXL_FABRICS_IFACE_CAP_BLOCKING_OPERATIONS | MXL_FABRICS_IFACE_CAP_REMOTE_WRITE,
+                    .maxMessageSize = 0,
+                }, .address = {.node = "127.0.0.1", .service = nullptr},
+                      .attr = nullptr},
+        .writer = writer,
+    };
+    REQUIRE(mxlFabricsTargetSetup(target, &config, nullptr, &targetInfo) == MXL_STATUS_OK);
+
+    auto const& info = *ofi::TargetInfo::fromAPI(targetInfo);
+    REQUIRE(info.continuous);
+    REQUIRE(info.continuous->version == ofi::TargetInfoContinuous::ProtocolVersion);
+    REQUIRE(info.continuous->sampleSize == 4);
+    REQUIRE(info.continuous->channelCount == flowConfig.continuous.channelCount);
+    REQUIRE(info.continuous->bufferLength == flowConfig.continuous.bufferLength);
+    REQUIRE(info.continuous->descriptorCount > 0);
+    REQUIRE(!info.bounceBufferInfo);
+
+    auto const json = info.toJSON();
+    auto parsed = picojson::value{};
+    REQUIRE(picojson::parse(parsed, json).empty());
+    auto root = parsed.get<picojson::object>();
+    REQUIRE(root.contains("continuous"));
+    REQUIRE(!root.contains("bounceBufferInfo"));
+
+    SECTION("the layout survives a round trip")
+    {
+        auto const roundTripped = ofi::TargetInfo::fromJSON(json);
+        REQUIRE(roundTripped.continuous == info.continuous);
+        REQUIRE(roundTripped == info);
+
+        // An initiator writes into whatever ring the layout describes, so two infos that differ in it are not the same target.
+        auto other = roundTripped;
+        other.continuous->bufferLength += 1;
+        REQUIRE(!(other == info));
+    }
+
+    SECTION("a target that predates the layout still parses")
+    {
+        root.erase("continuous");
+        auto bounce = picojson::object{};
+        bounce["entryCount"] = picojson::value{std::string{"4"}};
+        bounce["entrySize"] = picojson::value{std::string{"3856"}};
+        root["bounceBufferInfo"] = picojson::value{bounce};
+
+        auto const old = ofi::TargetInfo::fromJSON(picojson::value{root}.serialize());
+        REQUIRE(!old.continuous);
+        REQUIRE(old.bounceBufferInfo);
+        REQUIRE(old.bounceBufferInfo->entryCount == 4);
+        REQUIRE(old.bounceBufferInfo->entrySize == 3856);
+    }
+
+    mxlFabricsFreeTargetInfo(targetInfo);
     REQUIRE(mxlFabricsDestroyTarget(fabrics, target) == MXL_STATUS_OK);
     REQUIRE(mxlFabricsDestroyInstance(fabrics) == MXL_STATUS_OK);
     REQUIRE(mxlReleaseFlowWriter(instance, writer) == MXL_STATUS_OK);

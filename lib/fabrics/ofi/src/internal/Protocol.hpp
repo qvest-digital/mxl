@@ -32,8 +32,10 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         virtual std::vector<RemoteRegion> registerMemory(std::shared_ptr<Domain> domain) = 0;
 
+        /** \brief The layout of the audio ring an initiator writes into, if this protocol receives audio.
+         */
         [[nodiscard]]
-        virtual std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo() const = 0;
+        virtual std::optional<TargetInfoContinuous> continuousInfo() const = 0;
 
         /** \brief Start receiving.
          */
@@ -97,12 +99,18 @@ namespace mxl::lib::fabrics::ofi
         virtual void transferSamples(Endpoint const& ep, std::uint64_t headIndex, std::size_t count, ::fi_addr_t destAddr = FI_ADDR_UNSPEC) = 0;
 
         /** \brief Process a completion event. Any post-processing after a transfer should be done here.
+         * \param ep The endpoint the completed operation was posted on. Writes that waited for this completion are posted on it.
+         * \param completion The completion.
+         * \param destAddr The destination address. This is ignored for connection-oriented endpoints.
          */
-        virtual void processCompletion(Completion::Data const& completion) = 0;
+        virtual void processCompletion(Endpoint const& ep, Completion::Data const& completion, ::fi_addr_t destAddr = FI_ADDR_UNSPEC) = 0;
 
         /** \brief Account for an operation of this protocol that completed with an error.
+         * \param ep The endpoint the failed operation was posted on. Writes that waited for this completion are posted on it.
+         * \param error The error completion.
+         * \param destAddr The destination address. This is ignored for connection-oriented endpoints.
          */
-        virtual void processCompletionError(Completion::Error const& error) = 0;
+        virtual void processCompletionError(Endpoint const& ep, Completion::Error const& error, ::fi_addr_t destAddr = FI_ADDR_UNSPEC) = 0;
 
         /** \brief Check if there is uncompleted requests.
          */
@@ -137,11 +145,10 @@ namespace mxl::lib::fabrics::ofi
     /** \brief Select an appropriate ingress protocol based on the data layout
      * \param layout The data layout.
      * \param regions The regions involved.
-     * \param maxSyncBatchSize The maximum batch size for transfers.
      * \return A unique pointer to the selected ingress protocol.
      */
     [[nodiscard]]
-    std::unique_ptr<IngressProtocol> selectIngressProtocol(DataLayout const& layout, std::vector<Region> regions, std::uint32_t maxSyncBatchSize);
+    std::unique_ptr<IngressProtocol> selectIngressProtocol(DataLayout const& layout, std::vector<Region> regions);
 
     /** \brief Select an appropriate egress protocol based on the data layout
      * \param layout The data layout.

@@ -28,4 +28,27 @@ namespace mxl::lib::fabrics::ofi
     {
         return _inner;
     }
+
+    ImmDataSample::ImmDataSample(std::uint32_t data) noexcept
+        : _inner{data}
+    {}
+
+    ImmDataSample::ImmDataSample(std::size_t slot, std::uint64_t headIndex) noexcept
+        : _inner{static_cast<std::uint32_t>(slot & 0xFFFFU) | (static_cast<std::uint32_t>(headTag(headIndex)) << 16U)}
+    {}
+
+    ImmDataSample::Unpacked ImmDataSample::unpack() const noexcept
+    {
+        return Unpacked{.slot = static_cast<std::uint16_t>(_inner & 0xFFFFU), .headTag = static_cast<std::uint16_t>(_inner >> 16U)};
+    }
+
+    std::uint32_t ImmDataSample::data() const noexcept
+    {
+        return _inner;
+    }
+
+    std::uint16_t ImmDataSample::headTag(std::uint64_t headIndex) noexcept
+    {
+        return static_cast<std::uint16_t>(headIndex & 0xFFFFU);
+    }
 }

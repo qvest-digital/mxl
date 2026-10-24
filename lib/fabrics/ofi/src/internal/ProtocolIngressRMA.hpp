@@ -5,7 +5,6 @@
 #pragma once
 
 #include <vector>
-
 #include "AudioBounceBuffer.hpp"
 #include "DataLayout.hpp"
 #include "Protocol.hpp"
@@ -75,11 +74,11 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         virtual std::vector<RemoteRegion> registerMemory(std::shared_ptr<Domain> domain) override;
 
-        /** \copydoc IngressProtocol::bounceBufferInfo()
-         *\note This protocol does not use a bounce buffer, so this function returns an empty optional.
+        /** \copydoc IngressProtocol::continuousInfo()
+         * \note This protocol receives grains, so this function returns an empty optional.
          */
         [[nodiscard]]
-        virtual std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo() const override;
+        virtual std::optional<TargetInfoContinuous> continuousInfo() const override;
 
         /** \copydoc IngressProtocol::start()
          */
@@ -114,31 +113,46 @@ namespace mxl::lib::fabrics::ofi
         std::optional<ImmediateDataPool> _immData{};
     };
 
+    /** \brief Descriptor slots a target offers for audio batches.
+     *
+     * A slot is reused after this many batches, so a target that lags further behind its initiator reads a slot that was overwritten, which
+     * ImmDataSample detects.
+     */
+    constexpr std::size_t DefaultDescriptorCount = 256;
+
     /** \brief Ingress protocol for RMA writer endpoint for audio samples.
+     *
+     * The initiator writes samples straight into the flow's ring, then writes {headIndex, count} into one of the descriptor slots registered
+     * here, with immediate data naming the slot. Reading that completion yields the batch; the application commits it.
      */
     class RMASampleIngressProtocol final : public IngressProtocol
     {
     public:
         /** Construct an RMASampleIngressProtocol with the given region and data layout.
-         * \param region The memory region containing audio. The audio samples will be first received in one of the bounce buffer entry and will then
-         * be copied to this region.
+         * \param region The memory region holding the flow's ring. Initiators write samples into it.
+         * \param dataLayout The layout of the ring.
          */
-        RMASampleIngressProtocol(Region region, DataLayout::Continuous const& dataLayout, std::uint32_t maxSyncBatchSize);
+        RMASampleIngressProtocol(Region region, DataLayout::Continuous const& dataLayout);
 
         /** \copydoc IngressProtocol::registerMemory()
-         * \note This actually registers the memory of the internal bounce buffer, not the region passed in the constructor.
+         * \note This registers the ring and the descriptor slots, in that order.
          */
         [[nodiscard]]
         virtual std::vector<RemoteRegion> registerMemory(std::shared_ptr<Domain> domain) override;
 
-        /** \copydoc IngressProtocol::bounceBufferInfo()
+        /** \copydoc IngressProtocol::continuousInfo()
          */
         [[nodiscard]]
-        virtual std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo() const override;
+        virtual std::optional<TargetInfoContinuous> continuousInfo() const override;
 
+        /** \copydoc IngressProtocol::start()
+         */
         virtual void start(Endpoint const& endpoint) override;
 
-        /** \copydoc IngressProtocol::processCompletion()
+        /** \copydoc IngressProtocol::read()
+         * \throws Exception::invalidState if the completion has no immediate data, or the descriptor slot it names was overwritten before it
+         * was read.
+         * \throws Exception::invalidArgument if the slot does not exist or the descriptor in it describes no batch the ring can hold.
          */
         [[nodiscard]]
         virtual std::optional<Target::ReadResult> read(Endpoint const& endpoint, Completion const& completion) override;
@@ -153,7 +167,7 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         virtual bool canReadSamples() const noexcept override;
 
-        /** \copydoc IngressProtocol::destroy()
+        /** \copydoc IngressProtocol::reset()
          */
         virtual void reset() override;
 
@@ -161,16 +175,11 @@ namespace mxl::lib::fabrics::ofi
         void postReceives(Endpoint const& endpoint, std::size_t count);
         bool tryPostOne(Endpoint const& endpoint);
 
-        /** \brief Helper function to create an AudioBounceBuffer based on the given audio data layout and maximum synchronous batch size.
-         * Entries are as big as the maximum number of samples that can be transferred in a single batch, which is determined by maxSyncBatchSize.
-         * The number of entries is determined by how many batches are needed to cover the entire history buffer.
-         */
-        AudioBounceBuffer makeAudioBounceBuffer(DataLayout::Continuous const& layout, std::uint32_t maxSyncBatchSize);
-
     private:
-        AudioBounceBuffer _bounceBuffer;
-        Region _region;
-        bool _isMemoryRegistered = false;
-        std::optional<ImmediateDataPool> _immData{};
+        Region _region;                              /**< The flow's ring. */
+        DataLayout::Continuous _layout;              /**< Layout of the ring. */
+        std::vector<AudioEntryHeader> _descriptors;  /**< Descriptor slots, written by initiators. */
+        bool _isMemoryRegistered;                    /**< Whether registerMemory() ran. */
+        std::optional<ImmediateDataPool> _immData{}; /**< Receives for immediate data, where the provider needs them. */
     };
 }

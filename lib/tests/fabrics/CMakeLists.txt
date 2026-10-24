@@ -21,6 +21,7 @@ set_target_properties(mxl-fabrics-tests
 
 target_sources(mxl-fabrics-tests
         PRIVATE
+            test_audio.cpp
             test_basics.cpp
             test_interfaces.cpp
             test_sliced.cpp

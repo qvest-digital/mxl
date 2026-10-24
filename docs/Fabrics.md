@@ -35,11 +35,11 @@ To cover all the cases, there are two types of transfers we intend to use:
 
 ### 3.1 Remote Write
 
-As stated in the proposition, the preferred method to use to transfer data is Remote Write. Remote Write allows to modify target’s memory directly without it being involved. In RDMA, we can use “immediate data” to signal the target that a remote write operation occurred on its memory region. Immediate data also allows a user to embed 32-bit user data that will be available at the destination. Libfabric also supports this immediate data feature, and we will use it to communicate specific information to the target. Such information includes grainIndex and slice index for the “Discrete flow”, and head index and count for “Continuous flow”.
+As stated in the proposition, the preferred method to use to transfer data is Remote Write. Remote Write allows to modify target’s memory directly without it being involved. In RDMA, we can use “immediate data” to signal the target that a remote write operation occurred on its memory region. Immediate data also allows a user to embed 32-bit user data that will be available at the destination. Libfabric also supports this immediate data feature, and we will use it to communicate specific information to the target. Such information includes grainIndex and slice index for the “Discrete flow”. For a continuous flow, a head index and count do not fit into 32 bits, so the immediate data names a descriptor slot that holds them (see 7.3).
 
 #### Scatter-Gather
 
-Remote Write supports scatter-gather functionality on the source side, allowing the initiator to specify multiple non-contiguous buffers as the source. However, the destination is limited to a single contiguous address, which prevents unpacking the results back into multiple non-contiguous buffers and creates an asymmetry in the transfer operation. To address this problem, we have to use a bouncing buffer on the target side. On completion, the target is responsible for unpacking data back to non-contiguous buffers.
+Remote Write supports scatter-gather functionality on the source side, allowing the initiator to specify multiple non-contiguous buffers as the source. The destination is a list of at most `tx_attr->rma_iov_limit` buffers, which is 1 on some providers. A transfer that lands in more non-contiguous places than that is split into several writes.
 
 ### 3.2 Send/Recv
 There are some cases where the hardware does not support Remote Write. One example of this is some AWS instances that have EFA enabled hardware only have support for Send/Recv transfers.
@@ -285,7 +285,7 @@ When moving audio flow samples across hosts, one will typically determine the nu
 
 #### 7.2.1 - Remote Write
 
-This solution allows to re-use the remote write approach that is used for the grains. The solution is to use scatter-gather feature on the source buffers. On the receiver side, we have a bouncing buffer, and upon completion, we need to unpack the samples back to the associated non-contiguous buffers.
+This solution re-uses the remote write approach that is used for the grains. Each channel of a batch is contiguous in both rings except where a ring wraps, so the initiator writes every contiguous piece straight from its ring into the target's ring, and the target copies nothing. See 7.3.
 
 #### 7.2.2 - RDM endpoint Scatter-Gather with Tagged Send/Recv
 
@@ -302,27 +302,21 @@ Another solution that would work and is maybe more suited to our requirements is
 #### 7.2.5 Summary
 Method | Verb Used | Reliable | Copy at Source | Copy at Destination | Synchronization Required
 -- | -- | -- | -- | -- | --
-Remote Write | Remote Write | Yes | No | Yes | No
+Remote Write | Remote Write | Yes | No | No | No
 RDM Tagged | Tagged Send/Recv | Yes | No | No | Yes
 DGRAM Send/Recv | Send/Recv | No | No | Yes | No
 MSG Send/Recv | Send/Recv | Yes | No | Yes | No
 
 Considering the trade-offs, Remote Write is chosen as the primary protocol, but falls back to Send/Recv if Remote Write is not available.
 
-### 7.3 - Bouncing Buffer Unpacking
-The transfer will now use the scatter-gather feature on the source buffer to target a ring bouncing buffer on the target side. Upon completion, the target side will copy the entry of the bouncing buffer back to the MXL Audio Flow.
+### 7.3 - Direct writes and descriptors
+The target publishes the layout of its ring in its TargetInfo: sample size, channel count, samples per channel, and a number of descriptor slots. Its remote regions are the ring and an array of descriptor slots, each 16 bytes holding a head index and a count. The two rings can differ in length, because each domain sizes the history of its flows.
 
-![cont-flow-rma](./fabrics/img/mxl-fabrics-cont-flow-rma.png)
+For a batch, the initiator cuts every channel where either ring wraps and writes the pieces from its ring into the target's ring. It packs as many pieces into one write as the provider's `tx_attr->iov_limit`, `tx_attr->rma_iov_limit` and `ep_attr->max_msg_size` allow. It then writes the head index and count of the batch into a descriptor slot, with immediate data naming the slot and the low 16 bits of the head index. The completion of that write tells the target that the batch has landed; the target checks the descriptor and returns it, and the application commits it with OpenSamples and CommitSamples.
 
-To be able to unpack the bouncing buffer entry back to the mxl audio flow, we require some static information found in the ContinuousFlowData type.
-- Channel count
-- Number of samples per channel
-- Base pointer of MXL Audio Flow Data
-- Bytes per sample (sampleWordSize)
+The target's writer commits batches in the order their descriptors arrive and zero-fills samples skipped between two commits, so a descriptor must arrive after its data and after the descriptor before it. A connected endpoint (verbs RC, tcp) places writes in the order they are posted, so the descriptor follows its data at once. A connectionless endpoint (EFA) does not, so the descriptor is posted only once every earlier write has completed; every write asks for `FI_DELIVERY_COMPLETE`. Batches that arrive meanwhile are merged into one, at most half the target ring long.
 
-Upon completion, we need to accomplish these tasks:
-- OpenSamples (aka. getting `mxlMutableWrappedMultiBufferSlice` instance for the current count/index)
-- Using `mxlMutableWrapperMultiBufferSlice`, copy from bounce buffer to the flow buffer (the flow buffer can be user defined, but it’s layout should follow MXL Continuous Flow definition).
+Targets that predate this layout publish a bounce buffer instead. An initiator still sends to them by copying a batch into a staging copy of a bounce buffer entry and writing it as one write; the target copies it into its ring. An initiator that predates the layout refuses a target that publishes no bounce buffer.
 
 ## 8. Transfers summary
 
@@ -332,17 +326,17 @@ Upon completion, we need to accomplish these tasks:
 | Discrete | 1x Send with ImmData to a bouncing buffer | 1x Recv + copy to the media flow buffer | When Remote Write is not available |
 | Discrete | Nx Remote Write to Media Buffer<br>1x Remote Write with Imm Data (last) | Nothing | When tx or rx maxmium message size < transfer size |
 | Discrete | 1x Remote Write to Media Buffer (color)<br>1x Remote Write with ImmData to Media Buffer (alpha) | Nothing | When doing slice transfer with an Alpha plane present |
-| Continuous | 1x Remote Write with Scatter-gather to a bouncing buffer | Unpack samples to media flow buffer | Requires information about the data layout<br>- Number of channels<br>- Number of samples per channel<br>- Number of bytes per sample |
+| Continuous | Nx Remote Write to Media Buffer<br>1x Remote Write with ImmData to a descriptor slot | Nothing | N depends on where the rings wrap and on the provider's iov and message size limits |
 
 ## 9. Memory Registration
-RDMA operations require memory registration. Two types of target buffers are available: Media Flow Buffers and Bouncing Buffers. The registration logic is straightforward: if Bouncing Buffers exist, they are registered; if not, the Media Flow Buffers are registered instead.
+RDMA operations require memory registration. A target registers its Media Flow Buffers, and for a continuous flow its descriptor slots as well. An initiator registers its Media Flow Buffers, and per target the memory it writes descriptors or bounce buffer entries from.
 
 ## 10. Current Implementation Status
 
 The currently implemented feature set covers the optimal paths for both discrete and continuous flows:
 
 - **Discrete flow (grains):** Transferred using Remote Write (RMA) directly into the target's media buffer, with immediate data carrying the grain index. This is the optimal path that requires no involvement from the target during the transfer itself.
-- **Continuous flow (samples):** Transferred using Remote Write (RMA) with scatter-gather on the source side, landing data into a bouncing buffer on the target. Upon completion, the target unpacks the bouncing buffer back into the non-contiguous per-channel buffers of the MXL audio flow.
+- **Continuous flow (samples):** Transferred using Remote Write (RMA) directly into the target's media buffer, followed by a write into a descriptor slot with immediate data. The target copies nothing.
 
 Send/Recv and tag-matching fallback paths are not yet implemented. Send/Recv without tag matching requires a bouncing buffer and an extra copy, while tag matching requires explicit synchronization between initiator and target and may not benefit from hardware acceleration depending on the NIC. Given these trade-offs and that Remote Write covers the primary use cases, the fallback paths have been deferred.
 
