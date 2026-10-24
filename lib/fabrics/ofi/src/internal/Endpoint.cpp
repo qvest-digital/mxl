@@ -9,7 +9,9 @@
 #include <mutex>
 #include <optional>
 #include <random>
+#include <span>
 #include <utility>
+#include <vector>
 #include <uuid.h>
 #include <sys/uio.h>
 #include <mxl-internal/Logging.hpp>
@@ -320,7 +322,7 @@ namespace mxl::lib::fabrics::ofi
     }
 
     void Endpoint::writeImpl(Completion::Token token, ::iovec const* msgIov, std::size_t iovCount, void** desc, ::fi_rma_iov const* rmaIov,
-        ::fi_addr_t destAddr, std::optional<std::uint32_t> immData) const
+        std::size_t rmaIovCount, ::fi_addr_t destAddr, std::optional<std::uint32_t> immData) const
     {
         std::uint64_t data = immData.value_or(0);
         std::uint64_t flags = FI_DELIVERY_COMPLETE;
@@ -332,7 +334,7 @@ namespace mxl::lib::fabrics::ofi
             .iov_count = iovCount,
             .addr = destAddr,
             .rma_iov = rmaIov,
-            .rma_iov_count = 1,
+            .rma_iov_count = rmaIovCount,
             .context = Completion::tokenToContextValue(token),
             .data = data,
         };
@@ -348,63 +350,48 @@ namespace mxl::lib::fabrics::ofi
         auto msgIov = local.toIovec();
         auto rmaIov = remote.toRmaIov();
 
-        writeImpl(token, &msgIov, 1, descs.data(), &rmaIov, destAddr, immData);
+        writeImpl(token, &msgIov, 1, descs.data(), &rmaIov, 1, destAddr, immData);
 
         return 1;
     }
 
-    std::size_t Endpoint::write(Completion::Token token, LocalRegionGroup const& localGroup, RemoteRegion const& remote, ::fi_addr_t destAddr,
-        std::optional<std::uint32_t> immData, std::size_t* posted) const
+    void Endpoint::write(Completion::Token token, std::span<LocalRegion const> local, std::span<RemoteRegion const> remote, ::fi_addr_t destAddr,
+        std::optional<std::uint32_t> immData) const
     {
-        // A group larger than the iov limit goes out as several messages
-        // and the call can fail part way through. A caller tracking
-        // outstanding work has to count what reached the provider.
-        if (posted != nullptr)
-        {
-            *posted = 0;
-        }
-        auto remoteRmaIov = remote.toRmaIov();
-        auto remoteOffset = std::size_t{0};
-
         auto const iovLimit = info().txIovLimit();
-        auto const nbWrites = (localGroup.size() + iovLimit - 1) / iovLimit; // ceil(group.size() / iovLimit)
-
-        for (auto i = std::size_t{0}; i < nbWrites; i++)
+        auto const rmaIovLimit = info().rmaIovLimit();
+        if (local.empty() || remote.empty() || (local.size() > iovLimit) || (remote.size() > rmaIovLimit))
         {
-            auto const begin = i * iovLimit;
-            auto const end = begin + std::min(iovLimit, localGroup.size() - begin);
-
-            auto const localGroupSpan = localGroup.span(begin, end);
-
-            // Validate that we don't bust the remote region
-            if ((remoteOffset + localGroupSpan.byteSize()) > remote.len)
-            {
-                throw Exception::invalidArgument("Local region group is too large for the remote region.");
-            }
-
-            remoteRmaIov.addr = remote.addr + remoteOffset;
-            remoteRmaIov.len = localGroupSpan.byteSize();
-
-            auto const isLastWrite = (i == nbWrites - 1);
-            auto const immDataForWrite = isLastWrite ? immData : std::nullopt;
-
-            writeImpl(token,
-                localGroupSpan.asIovec(),
-                localGroupSpan.size(),
-                const_cast<void**>(localGroupSpan.desc()),
-                &remoteRmaIov,
-                destAddr,
-                immDataForWrite);
-
-            if (posted != nullptr)
-            {
-                ++*posted;
-            }
-
-            remoteOffset += localGroupSpan.byteSize();
+            throw Exception::invalidArgument(
+                "A write needs 1 to {} local and 1 to {} remote buffers, got {} and {}.", iovLimit, rmaIovLimit, local.size(), remote.size());
         }
 
-        return nbWrites;
+        auto msgIovs = std::vector<::iovec>{};
+        auto descs = std::vector<void*>{};
+        auto rmaIovs = std::vector<::fi_rma_iov>{};
+        auto localLength = std::size_t{0};
+        auto remoteLength = std::size_t{0};
+        for (auto const& region : local)
+        {
+            msgIovs.push_back(region.toIovec());
+            descs.push_back(region.desc);
+            localLength += region.len;
+        }
+        for (auto const& region : remote)
+        {
+            rmaIovs.push_back(region.toRmaIov());
+            remoteLength += region.len;
+        }
+
+        if ((localLength != remoteLength) || (localLength > info().maxMsgSize()))
+        {
+            throw Exception::invalidArgument("A write of {} local bytes into {} remote bytes: the lengths must match and be at most {} bytes.",
+                localLength,
+                remoteLength,
+                info().maxMsgSize());
+        }
+
+        writeImpl(token, msgIovs.data(), msgIovs.size(), descs.data(), rmaIovs.data(), rmaIovs.size(), destAddr, immData);
     }
 
     void Endpoint::recv(LocalRegion region) const

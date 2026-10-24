@@ -160,6 +160,16 @@ namespace mxl::lib::fabrics::ofi
         return _raw->tx_attr->iov_limit;
     }
 
+    std::size_t FabricInfoView::rmaIovLimit() const noexcept
+    {
+        return _raw->tx_attr->rma_iov_limit;
+    }
+
+    std::size_t FabricInfoView::maxMsgSize() const noexcept
+    {
+        return _raw->ep_attr->max_msg_size;
+    }
+
     std::size_t FabricInfoView::txSize() const noexcept
     {
         return _raw->tx_attr->size;

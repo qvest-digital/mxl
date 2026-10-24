@@ -8,6 +8,7 @@
 #include <bit>
 #include <memory>
 #include <optional>
+#include <span>
 #include <uuid.h>
 #include <rdma/fabric.h>
 #include <rdma/fi_endpoint.h>
@@ -263,25 +264,20 @@ namespace mxl::lib::fabrics::ofi
         std::size_t write(Completion::Token token, LocalRegion const& local, RemoteRegion const& remote, ::fi_addr_t destAddr = FI_ADDR_UNSPEC,
             std::optional<std::uint32_t> immData = std::nullopt) const;
 
-        /** \brief Push a remote write work request of a scatter-gather list to the endpoint work queue.
+        /** \brief Push one remote write that gathers from several local buffers and scatters into several remote buffers.
          *
-         * When the write is complete, a Completion::Data will be pushed to the
-         * completion queue associated with the endpoint. Before a write request can be made, the endpoint must have been enabled.
+         * The local buffers are read in order as one byte stream, which fills the remote buffers in order. When the write is complete, a
+         * Completion::Data will be pushed to the completion queue associated with the endpoint.
          * \param token Completion token to associate with the write operation
-         * \param localGroup Source memory regions to write from (scatter-gather version)
-         * \param remoteGroup Destination memory regions to write to
+         * \param local Source buffers. At most FabricInfoView::txIovLimit() of them.
+         * \param remote Destination buffers. At most FabricInfoView::rmaIovLimit() of them, together as long as the source buffers and at most
+         * FabricInfoView::maxMsgSize() bytes.
          * \param destAddr The destination address of the target endpoint. This is unused when using connected endpoints.
-         * \param 64 bits of user data that will be available in the completion entry associated with this transfer.
-         * \return The number of requests posted to the endpoint work queue
-         * \note  In this function, there will potentially be more than a single write transfer. This occurs if the IOV limit supported by the
-         * endpoint is smaller than the number of local regions in the local region group. In that case, multiple writes are performed. This behavior
-         * is handled completely by the function and will return the number of writes performed accordingly. Note that, only the last transfer is
-         * posted with immediate data to signal completion to the target.
+         * \param immData 32 bits of user data that will be available in the remote completion entry associated with this transfer.
+         * \throws Exception::invalidArgument if the write is empty, exceeds a limit of the provider, or the local and remote lengths differ.
          */
-        [[nodiscard]]
-        std::size_t write(Completion::Token token, LocalRegionGroup const& localGroup, RemoteRegion const& remote,
-            ::fi_addr_t destAddr = FI_ADDR_UNSPEC, std::optional<std::uint32_t> immData = std::nullopt,
-            std::size_t* posted = nullptr) const;
+        void write(Completion::Token token, std::span<LocalRegion const> local, std::span<RemoteRegion const> remote,
+            ::fi_addr_t destAddr = FI_ADDR_UNSPEC, std::optional<std::uint32_t> immData = std::nullopt) const;
 
         /** \brief Push a recv work request to the endpoint work queue.
          *
@@ -306,7 +302,7 @@ namespace mxl::lib::fabrics::ofi
         /** \brief Internal implementation of the  remote write request
          */
         void writeImpl(Completion::Token token, ::iovec const* msgIov, std::size_t iovCount, void** desc, ::fi_rma_iov const* rmaIov,
-            ::fi_addr_t destAddr, std::optional<std::uint32_t> immData) const;
+            std::size_t rmaIovCount, ::fi_addr_t destAddr, std::optional<std::uint32_t> immData) const;
 
         /** \brief Close the endpoint and release all resources. Called from the destructor and the move assignment operator.
          */

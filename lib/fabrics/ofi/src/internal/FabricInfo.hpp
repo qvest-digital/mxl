@@ -137,6 +137,16 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         std::size_t txIovLimit() const noexcept;
 
+        /** \brief The maximum number of remote buffers (fi_rma_iov entries) a single RMA operation can target.
+         */
+        [[nodiscard]]
+        std::size_t rmaIovLimit() const noexcept;
+
+        /** \brief The maximum size in bytes of a single data transfer on the endpoint.
+         */
+        [[nodiscard]]
+        std::size_t maxMsgSize() const noexcept;
+
         /** \brief The endpoint's send-queue depth: how many operations may
          * be outstanding before the provider refuses another.
          */
