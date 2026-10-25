@@ -194,8 +194,8 @@ namespace mxl::lib::fabrics::ofi
               .channelCount = _remoteInfo.continuous->channelCount,
               .bufferLength = _remoteInfo.continuous->bufferLength}
         , _localRegion{localRegion}
-        , _remoteRing{_remoteInfo.remoteRegions.at(0)}
-        , _remoteDescriptors{_remoteInfo.remoteRegions.at(1)}
+        , _remoteRing{_remoteInfo.continuous->ring}
+        , _remoteDescriptors{_remoteInfo.continuous->descriptors}
         , _limits{limits}
         , _descriptors(_remoteInfo.continuous->descriptorCount)
         , _descriptorRegistration{}
@@ -480,19 +480,20 @@ namespace mxl::lib::fabrics::ofi
                     TargetInfoContinuous::ProtocolVersion);
             }
             if ((remote.sampleSize != _layout.sampleSize) || (remote.channelCount != _layout.channelCount) || (remote.bufferLength < 2) ||
-                (remote.descriptorCount == 0) || (remote.descriptorCount > 65536U) || (remoteInfo.remoteRegions.size() != 2) ||
-                (remoteInfo.remoteRegions[0].len < (remote.sampleSize * remote.channelCount * remote.bufferLength)) ||
-                (remoteInfo.remoteRegions[1].len < (remote.descriptorCount * sizeof(AudioEntryHeader))))
+                (remote.descriptorCount == 0) || (remote.descriptorCount > 65536U) ||
+                (remote.ring.len < (remote.sampleSize * remote.channelCount * remote.bufferLength)) ||
+                (remote.descriptors.len < (remote.descriptorCount * sizeof(AudioEntryHeader))))
             {
                 throw Exception::invalidArgument("The target's audio ring does not match the source flow: {} channels of {} samples of {} bytes "
-                                                 "against {} channels of {} bytes, {} descriptor slots, {} remote regions.",
+                                                 "against {} channels of {} bytes, {} descriptor slots, a ring of {} bytes, {} bytes of slots.",
                     remote.channelCount,
                     remote.bufferLength,
                     remote.sampleSize,
                     _layout.channelCount,
                     _layout.sampleSize,
                     remote.descriptorCount,
-                    remoteInfo.remoteRegions.size());
+                    remote.ring.len,
+                    remote.descriptors.len);
             }
 
             struct MakeUniqueEnabler : RMASampleEgressProtocol

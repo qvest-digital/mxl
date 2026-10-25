@@ -254,13 +254,15 @@ TEST_CASE("ofi: audio reaches a target that only publishes a bounce buffer", "[o
 
     SECTION("a target with an unknown audio protocol version is refused")
     {
-        target.info().bounceBufferInfo.reset();
+        // Refused even though the target also publishes a bounce buffer: a layout this initiator cannot read is reported, not passed over.
         target.info().continuous = TargetInfoContinuous{
             .version = TargetInfoContinuous::ProtocolVersion + 1,
             .sampleSize = sizeof(Sample),
             .channelCount = channelCount,
             .bufferLength = 1024,
             .descriptorCount = 1,
+            .ring = RemoteRegion{.addr = 0, .len = sizeof(Sample) * channelCount * 1024, .rkey = 0},
+            .descriptors = RemoteRegion{.addr = 0, .len = sizeof(AudioEntryHeader),             .rkey = 0},
         };
         REQUIRE(mxlFabricsInitiatorAddTarget(initiator, target.info().toAPI()) != MXL_STATUS_OK);
     }

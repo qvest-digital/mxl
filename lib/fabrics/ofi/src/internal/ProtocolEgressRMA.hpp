@@ -137,7 +137,7 @@ namespace mxl::lib::fabrics::ofi
     private:
         /** \brief Construct the protocol for one target.
          * \param token Completion token of the target's writes.
-         * \param info The target's info. It must carry TargetInfoContinuous and two remote regions, which the template checks.
+         * \param info The target's info. It must carry TargetInfoContinuous, which the template checks.
          * \param layout Layout of the source ring.
          * \param localRegion The registered source ring.
          * \param limits Limits of one write on the endpoint.

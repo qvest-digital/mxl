@@ -14,6 +14,7 @@
 #include <vector>
 #include <catch2/catch_template_test_macros.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <picojson/wrapper.h>
 #include <mxl/fabrics.h>
 #include <mxl/flow.h>
 #include <mxl/mxl.h>
@@ -35,6 +36,14 @@ namespace
     constexpr auto BatchCount = std::size_t{6};
 
     using Sample = std::uint32_t;
+
+    /** \brief The wire format an initiator writes audio in.
+     */
+    enum class Wire
+    {
+        Direct, /**< Straight into the target's ring, followed by a descriptor. */
+        Bounce, /**< Into a bounce buffer entry, as initiators that predate TargetInfoContinuous do. */
+    };
 
     /** \brief The sample every test writes at an index of a channel, so a sample landing anywhere else is visible.
      */
@@ -140,7 +149,6 @@ namespace
             check(mxlFabricsCreateInstance, "source fabrics", _sourceInstance, nullptr, &_sourceFabrics);
             check(mxlFabricsCreateInstance, "target fabrics", _targetInstance, nullptr, &_targetFabrics);
             check(mxlFabricsCreateTarget, "target", _targetFabrics, &_target);
-            check(mxlFabricsCreateInitiator, "initiator", _sourceFabrics, &_initiator);
 
             auto targetConfig = mxlFabricsTargetConfig{
                 .version = MXL_FABRICS_API_VERSION,
@@ -155,29 +163,24 @@ namespace
             };
             check(mxlFabricsTargetSetup, "target setup", _target, &targetConfig, nullptr, &_targetInfo);
 
-            auto initiatorConfig = mxlFabricsInitiatorConfig{
-                .version = MXL_FABRICS_API_VERSION,
-                .interface = {
-                    .version = MXL_FABRICS_API_VERSION,
-                    .provider = Provider::provider,
-                    .caps = {.version = MXL_FABRICS_API_VERSION, .flags = MXL_FABRICS_IFACE_CAP_REMOTE_WRITE, .maxMessageSize = 0},
-                    .address = {.node = Provider::initiatorNode, .service = _service.c_str()},
-                    .attr = nullptr,
-                },
-                .reader = _sourceReader,
-            };
-            check(mxlFabricsInitiatorSetup, "initiator setup", _initiator, &initiatorConfig, nullptr);
-            check(mxlFabricsInitiatorAddTarget, "add target", _initiator, _targetInfo);
             // clang-format on
 
-            connect();
+            _initiator = addInitiator(Provider::initiatorNode);
         }
 
         ~AudioFixture()
         {
-            mxlFabricsDestroyInitiator(_sourceFabrics, _initiator);
+            for (auto const& [initiator, reader] : _initiators)
+            {
+                mxlFabricsDestroyInitiator(_sourceFabrics, initiator);
+                mxlReleaseFlowReader(_sourceInstance, reader);
+            }
             mxlFabricsDestroyTarget(_targetFabrics, _target);
             mxlFabricsFreeTargetInfo(_targetInfo);
+            if (_legacyTargetInfo != nullptr)
+            {
+                mxlFabricsFreeTargetInfo(_legacyTargetInfo);
+            }
             mxlFabricsDestroyInstance(_sourceFabrics);
             mxlFabricsDestroyInstance(_targetFabrics);
             mxlReleaseFlowReader(_targetInstance, _targetReader);
@@ -192,6 +195,51 @@ namespace
         AudioFixture& operator=(AudioFixture const&) = delete;
 
     protected:
+        /** \brief The initiator every fixture has.
+         */
+        [[nodiscard]]
+        mxlFabricsInitiator initiator() const noexcept
+        {
+            return _initiator;
+        }
+
+        /** \brief Set up another initiator on the source flow, with a reader of its own.
+         * \param node The node of its endpoint, unique among the fixture's initiators.
+         */
+        mxlFabricsInitiator addInitiator(char const* node)
+        {
+            auto reader = mxlFlowReader{nullptr};
+            auto initiator = mxlFabricsInitiator{nullptr};
+            // clang-format off
+            check(mxlCreateFlowReader, "source reader", _sourceInstance, FlowId, "", &reader);
+            check(mxlFabricsCreateInitiator, "initiator", _sourceFabrics, &initiator);
+            _initiators.emplace_back(initiator, reader);
+
+            auto initiatorConfig = mxlFabricsInitiatorConfig{
+                .version = MXL_FABRICS_API_VERSION,
+                .interface = {
+                    .version = MXL_FABRICS_API_VERSION,
+                    .provider = Provider::provider,
+                    .caps = {.version = MXL_FABRICS_API_VERSION, .flags = MXL_FABRICS_IFACE_CAP_REMOTE_WRITE, .maxMessageSize = 0},
+                    .address = {.node = node, .service = _service.c_str()},
+                    .attr = nullptr,
+                },
+                .reader = reader,
+            };
+            check(mxlFabricsInitiatorSetup, "initiator setup", initiator, &initiatorConfig, nullptr);
+            // clang-format on
+            return initiator;
+        }
+
+        /** \brief Add the target to an initiator, as it reads the target's info when writing the given wire format, and connect it.
+         */
+        void addTarget(mxlFabricsInitiator initiator, Wire wire)
+        {
+            auto const info = (wire == Wire::Direct) ? _targetInfo : legacyTargetInfo();
+            check(mxlFabricsInitiatorAddTarget, "add target", initiator, info);
+            connect(initiator);
+        }
+
         /** \brief The target's TargetInfo, as the initiator receives it.
          */
         [[nodiscard]]
@@ -221,9 +269,9 @@ namespace
             REQUIRE(mxlFlowWriterCommitSamples(_sourceWriter) == MXL_STATUS_OK);
         }
 
-        /** \brief Offer a batch to the initiator until it accepts it. The application reads it first, as a gateway does.
+        /** \brief Offer a batch to an initiator until it accepts it. The application reads it first, as a gateway does.
          */
-        void transfer(std::uint64_t headIndex, std::size_t count)
+        void transfer(mxlFabricsInitiator initiator, std::uint64_t headIndex, std::size_t count)
         {
             auto slice = mxlWrappedMultiBufferSlice{};
             REQUIRE(mxlFlowReaderGetSamplesNonBlocking(_sourceReader, headIndex, count, &slice) == MXL_STATUS_OK);
@@ -231,7 +279,7 @@ namespace
             auto const deadline = std::chrono::steady_clock::now() + TestTimeout;
             for (;;)
             {
-                auto const status = mxlFabricsInitiatorTransferSamples(_initiator, headIndex, count);
+                auto const status = mxlFabricsInitiatorTransferSamples(initiator, headIndex, count);
                 if (status == MXL_STATUS_OK)
                 {
                     return;
@@ -263,12 +311,12 @@ namespace
             return batch;
         }
 
-        /** \brief Wait until the initiator has nothing in flight.
+        /** \brief Wait until an initiator has nothing in flight.
          */
-        void drain()
+        void drain(mxlFabricsInitiator initiator)
         {
             auto const deadline = std::chrono::steady_clock::now() + TestTimeout;
-            while (mxlFabricsInitiatorMakeProgressNonBlocking(_initiator) != MXL_STATUS_OK)
+            while (mxlFabricsInitiatorMakeProgressNonBlocking(initiator) != MXL_STATUS_OK)
             {
                 REQUIRE(std::chrono::steady_clock::now() < deadline);
                 pollTarget();
@@ -305,8 +353,36 @@ namespace
     private:
         void progress()
         {
-            auto const status = mxlFabricsInitiatorMakeProgressNonBlocking(_initiator);
-            REQUIRE(((status == MXL_STATUS_OK) || (status == MXL_ERR_NOT_READY)));
+            for (auto const& [initiator, reader] : _initiators)
+            {
+                auto const status = mxlFabricsInitiatorMakeProgressNonBlocking(initiator);
+                REQUIRE(((status == MXL_STATUS_OK) || (status == MXL_ERR_NOT_READY)));
+            }
+        }
+
+        /** \brief The target's TargetInfo as an initiator that predates TargetInfoContinuous reads it.
+         *
+         * Such an initiator parses the same JSON and knows no "continuous" key, so it reads the regions and the bounce buffer alone. Given
+         * that info, an initiator of this library writes what those initiators write: RMASampleBounceEgressProtocol is their egress
+         * protocol, and it refuses a target the same way they do, unless every remote region is a bounce buffer entry.
+         */
+        mxlFabricsTargetInfo legacyTargetInfo()
+        {
+            if (_legacyTargetInfo == nullptr)
+            {
+                auto size = std::size_t{0};
+                REQUIRE(mxlFabricsTargetInfoToString(_targetInfo, nullptr, &size) == MXL_STATUS_OK);
+                auto json = std::string(size, '\0');
+                REQUIRE(mxlFabricsTargetInfoToString(_targetInfo, json.data(), &size) == MXL_STATUS_OK);
+                json.resize(size - 1);
+
+                auto parsed = picojson::value{};
+                REQUIRE(picojson::parse(parsed, json).empty());
+                auto root = parsed.get<picojson::object>();
+                root.erase("continuous");
+                REQUIRE(mxlFabricsTargetInfoFromString(picojson::value{root}.serialize().c_str(), &_legacyTargetInfo) == MXL_STATUS_OK);
+            }
+            return _legacyTargetInfo;
         }
 
         /** \brief Read one batch from the target, if one arrived, and commit it the way the application does.
@@ -329,7 +405,7 @@ namespace
             _received.emplace_back(headIndex, count);
         }
 
-        void connect()
+        void connect(mxlFabricsInitiator initiator)
         {
             auto const deadline = std::chrono::steady_clock::now() + TestTimeout;
             while (std::chrono::steady_clock::now() < deadline)
@@ -337,7 +413,7 @@ namespace
                 auto headIndex = std::uint64_t{0};
                 auto count = std::size_t{0};
                 static_cast<void>(mxlFabricsTargetReadSamplesNonBlocking(_target, &headIndex, &count));
-                if (mxlFabricsInitiatorMakeProgressNonBlocking(_initiator) == MXL_STATUS_OK)
+                if (mxlFabricsInitiatorMakeProgressNonBlocking(initiator) == MXL_STATUS_OK)
                 {
                     return;
                 }
@@ -363,9 +439,11 @@ namespace
         mxlFabricsInstance _sourceFabrics{nullptr};
         mxlFabricsInstance _targetFabrics{nullptr};
         mxlFabricsTarget _target{nullptr};
-        mxlFabricsInitiator _initiator{nullptr};
         mxlFabricsTargetInfo _targetInfo{nullptr};
-        std::vector<std::pair<std::uint64_t, std::size_t>> _received; /**< Batches the target reported, oldest first. */
+        mxlFabricsTargetInfo _legacyTargetInfo{nullptr}; /**< The target's info as an initiator that predates the layout reads it. */
+        std::vector<std::pair<mxlFabricsInitiator, mxlFlowReader>> _initiators; /**< Every initiator and the reader it was set up with. */
+        mxlFabricsInitiator _initiator{nullptr};
+        std::vector<std::pair<std::uint64_t, std::size_t>> _received;           /**< Batches the target reported, oldest first. */
     };
 }
 
@@ -377,16 +455,19 @@ TEMPLATE_TEST_CASE_METHOD(AudioFixture, "Fabrics: audio lands straight in the ta
     REQUIRE(sourceLength == 19456);
     REQUIRE(targetLength == 10240);
 
-    // The target publishes its ring and its descriptor slots, and no bounce buffer.
+    // The target publishes its ring and its descriptor slots, and a bounce buffer whose entries are the remote regions.
     auto const& info = this->targetInfo();
-    REQUIRE(!info.bounceBufferInfo);
     REQUIRE(info.continuous);
     REQUIRE(info.continuous->bufferLength == targetLength);
     REQUIRE(info.continuous->channelCount == channelCount);
     REQUIRE(info.continuous->sampleSize == sizeof(Sample));
-    REQUIRE(info.remoteRegions.size() == 2);
-    REQUIRE(info.remoteRegions[0].len == channelCount * targetLength * sizeof(Sample));
-    REQUIRE(info.remoteRegions[1].len == info.continuous->descriptorCount * 16);
+    REQUIRE(info.continuous->ring.len == channelCount * targetLength * sizeof(Sample));
+    REQUIRE(info.continuous->descriptors.len == info.continuous->descriptorCount * 16);
+    REQUIRE(info.bounceBufferInfo);
+    REQUIRE(info.remoteRegions.size() == info.bounceBufferInfo->entryCount);
+
+    auto const initiator = this->initiator();
+    this->addTarget(initiator, Wire::Direct);
 
     SECTION("one batch at a time")
     {
@@ -394,13 +475,13 @@ TEMPLATE_TEST_CASE_METHOD(AudioFixture, "Fabrics: audio lands straight in the ta
         {
             auto const headIndex = FirstHeadIndex + (batch * BatchSize);
             this->writeSource(headIndex, BatchSize);
-            this->transfer(headIndex, BatchSize);
+            this->transfer(initiator, headIndex, BatchSize);
 
             auto const [receivedHead, receivedCount] = this->receive();
             REQUIRE(receivedHead == headIndex);
             REQUIRE(receivedCount == BatchSize);
             this->requireTargetHolds(headIndex, BatchSize);
-            this->drain();
+            this->drain(initiator);
         }
     }
 
@@ -412,7 +493,7 @@ TEMPLATE_TEST_CASE_METHOD(AudioFixture, "Fabrics: audio lands straight in the ta
         {
             auto const headIndex = FirstHeadIndex + (batch * BatchSize);
             this->writeSource(headIndex, BatchSize);
-            this->transfer(headIndex, BatchSize);
+            this->transfer(initiator, headIndex, BatchSize);
         }
 
         auto const lastHeadIndex = FirstHeadIndex + ((BatchCount - 1) * BatchSize);
@@ -425,8 +506,76 @@ TEMPLATE_TEST_CASE_METHOD(AudioFixture, "Fabrics: audio lands straight in the ta
             expectedStart = receivedHead;
         }
         REQUIRE(expectedStart == lastHeadIndex);
-        this->drain();
+        this->drain(initiator);
 
         this->requireTargetHolds(lastHeadIndex, BatchCount * BatchSize);
     }
+
+    SECTION("a batch longer than a bounce buffer entry")
+    {
+        // The bounce buffer holds the flow's sync batch size of 480 samples per entry, so only the direct path carries this batch. It
+        // crosses the target wrap at 20480.
+        auto const headIndex = std::uint64_t{20480 + BatchSize};
+        this->writeSource(headIndex, 2 * BatchSize);
+        this->transfer(initiator, headIndex, 2 * BatchSize);
+
+        auto const [receivedHead, receivedCount] = this->receive();
+        REQUIRE(receivedHead == headIndex);
+        REQUIRE(receivedCount == 2 * BatchSize);
+        this->requireTargetHolds(headIndex, 2 * BatchSize);
+        this->drain(initiator);
+    }
+}
+
+TEMPLATE_TEST_CASE_METHOD(AudioFixture, "Fabrics: audio from an initiator that predates the ring layout lands in the target ring",
+    "[fabrics][audio][legacy]", ProviderTCP, ProviderSHM)
+{
+    auto const initiator = this->initiator();
+    this->addTarget(initiator, Wire::Bounce);
+
+    // One batch per transfer, as such an initiator sends them: the second crosses the source wrap and the fourth the target wrap, so the
+    // target unpacks entries into both fragments of its ring.
+    for (auto batch = std::size_t{0}; batch < BatchCount; ++batch)
+    {
+        auto const headIndex = FirstHeadIndex + (batch * BatchSize);
+        this->writeSource(headIndex, BatchSize);
+        this->transfer(initiator, headIndex, BatchSize);
+
+        auto const [receivedHead, receivedCount] = this->receive();
+        REQUIRE(receivedHead == headIndex);
+        REQUIRE(receivedCount == BatchSize);
+        this->requireTargetHolds(headIndex, BatchSize);
+        this->drain(initiator);
+    }
+
+    auto const lastHeadIndex = FirstHeadIndex + ((BatchCount - 1) * BatchSize);
+    this->requireTargetHolds(lastHeadIndex, BatchCount * BatchSize);
+}
+
+// A connectionless target takes writes from any number of initiators on its one endpoint, so both wire formats arrive there interleaved. A
+// connected target serves one connection at a time and sees one format per connection.
+TEST_CASE_METHOD(AudioFixture<ProviderSHM>, "Fabrics: initiators of both wire formats write to one target in turn", "[fabrics][audio][legacy]")
+{
+    auto const direct = this->initiator();
+    auto const legacy = this->addInitiator("audio-legacy-initiator");
+    this->addTarget(direct, Wire::Direct);
+    this->addTarget(legacy, Wire::Bounce);
+
+    // The legacy initiator sends the odd batches, among them the second, across the source wrap, and the fourth, across the target wrap.
+    for (auto batch = std::size_t{0}; batch < BatchCount; ++batch)
+    {
+        auto const initiator = ((batch % 2) == 0) ? direct : legacy;
+        auto const headIndex = FirstHeadIndex + (batch * BatchSize);
+        this->writeSource(headIndex, BatchSize);
+        this->transfer(initiator, headIndex, BatchSize);
+
+        auto const [receivedHead, receivedCount] = this->receive();
+        REQUIRE(receivedHead == headIndex);
+        REQUIRE(receivedCount == BatchSize);
+        this->requireTargetHolds(headIndex, BatchSize);
+        this->drain(initiator);
+    }
+
+    auto const lastHeadIndex = FirstHeadIndex + ((BatchCount - 1) * BatchSize);
+    this->requireTargetHolds(lastHeadIndex, BatchCount * BatchSize);
 }

@@ -23,6 +23,7 @@ set_target_properties(mxl-fabrics-ofi-tests
 target_sources(mxl-fabrics-ofi-tests
         PRIVATE
             test_Address.cpp
+            test_AudioBounceBuffer.cpp
             test_AudioBounceTarget.cpp
             test_Domain.cpp
             test_ImmData.cpp

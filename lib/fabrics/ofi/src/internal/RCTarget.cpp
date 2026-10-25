@@ -42,9 +42,11 @@ namespace mxl::lib::fabrics::ofi
         auto pep = makeListener(fabric);
 
         auto const mxlRegions = MxlRegions::forWriter(config.writer);
-        auto proto = selectIngressProtocol(mxlRegions.dataLayout(), mxlRegions.regions());
+        auto proto = selectIngressProtocol(mxlRegions.dataLayout(), mxlRegions.regions(), mxlRegions.maxSyncBatchSize());
+        // The audio layout holds registered regions, so the memory is registered first.
+        auto remoteRegions = proto->registerMemory(domain);
         auto targetInfo = std::make_unique<TargetInfo>(
-            pep.id(), pep.localAddress(), *provider, proto->registerMemory(domain), std::nullopt, proto->continuousInfo());
+            pep.id(), pep.localAddress(), *provider, std::move(remoteRegions), proto->bounceBufferInfo(), proto->continuousInfo());
 
         // Helper struct to enable the std::make_unique function to access the private constructor of this class.
         struct MakeUniqueEnabler : RCTarget

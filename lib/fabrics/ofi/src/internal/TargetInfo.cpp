@@ -16,6 +16,29 @@
 
 namespace mxl::lib::fabrics::ofi
 {
+    namespace
+    {
+        picojson::value regionToJSON(RemoteRegion const& remoteRegion)
+        {
+            auto region = picojson::object{};
+            region["addr"] = picojson::value(std::to_string(remoteRegion.addr));
+            region["len"] = picojson::value(std::to_string(remoteRegion.len));
+            region["rkey"] = picojson::value(std::to_string(remoteRegion.rkey));
+            return picojson::value(region);
+        }
+
+        RemoteRegion regionFromJSON(picojson::value const& regionValue)
+        {
+            auto const regionObj = regionValue.get<picojson::object>();
+
+            // Conversions of types that represent memory addresses to strings is preferred over converting to float
+            // to make sure nobody can reduce precision when converting on the way.
+            auto const addr = std::stoull(regionObj.at("addr").get<std::string>());
+            auto const len = std::stoull(regionObj.at("len").get<std::string>());
+            auto const rkey = std::stoull(regionObj.at("rkey").get<std::string>());
+            return {addr, len, rkey};
+        }
+    }
 
     TargetInfo* TargetInfo::fromAPI(mxlFabricsTargetInfo api) noexcept
     {
@@ -37,11 +60,7 @@ namespace mxl::lib::fabrics::ofi
         auto regions = picojson::array{};
         for (auto const& remoteRegion : remoteRegions)
         {
-            auto region = picojson::object{};
-            region["addr"] = picojson::value(std::to_string(remoteRegion.addr));
-            region["len"] = picojson::value(std::to_string(remoteRegion.len));
-            region["rkey"] = picojson::value(std::to_string(remoteRegion.rkey));
-            regions.emplace_back(region);
+            regions.emplace_back(regionToJSON(remoteRegion));
         }
         root["regions"] = picojson::value(regions);
 
@@ -61,6 +80,8 @@ namespace mxl::lib::fabrics::ofi
             continuousObj["channelCount"] = picojson::value(std::to_string(continuous->channelCount));
             continuousObj["bufferLength"] = picojson::value(std::to_string(continuous->bufferLength));
             continuousObj["descriptorCount"] = picojson::value(std::to_string(continuous->descriptorCount));
+            continuousObj["ring"] = regionToJSON(continuous->ring);
+            continuousObj["descriptors"] = regionToJSON(continuous->descriptors);
             root["continuous"] = picojson::value(continuousObj);
         }
 
@@ -92,14 +113,7 @@ namespace mxl::lib::fabrics::ofi
         auto regions = std::vector<RemoteRegion>{};
         for (auto const& regionValue : root.at("regions").get<picojson::array>())
         {
-            auto const regionObj = regionValue.get<picojson::object>();
-
-            // Conversions of types that represent memory addresses to strings is preferred over converting to float
-            // to make sure nobody can reduce precision when converting on the way.
-            auto const addr = std::stoull(regionObj.at("addr").get<std::string>());
-            auto const len = std::stoull(regionObj.at("len").get<std::string>());
-            auto const rkey = std::stoull(regionObj.at("rkey").get<std::string>());
-            regions.emplace_back(addr, len, rkey);
+            regions.emplace_back(regionFromJSON(regionValue));
         }
 
         auto bounceBufferInfo = std::optional<TargetInfoBounceBufferInfo>{std::nullopt};
@@ -115,12 +129,23 @@ namespace mxl::lib::fabrics::ofi
         if (root.contains("continuous"))
         {
             auto const continuousObj = root.at("continuous").get<picojson::object>();
+
+            // Another version may carry other fields, or the same fields with another meaning, so nothing else is read.
+            auto const version = static_cast<std::uint32_t>(std::stoul(continuousObj.at("version").get<std::string>()));
+            if (version != TargetInfoContinuous::ProtocolVersion)
+            {
+                throw Exception::invalidArgument(
+                    "The target speaks audio write protocol version {}, this initiator speaks {}.", version, TargetInfoContinuous::ProtocolVersion);
+            }
+
             continuous = TargetInfoContinuous{
-                .version = static_cast<std::uint32_t>(std::stoul(continuousObj.at("version").get<std::string>())),
+                .version = version,
                 .sampleSize = std::stoull(continuousObj.at("sampleSize").get<std::string>()),
                 .channelCount = std::stoull(continuousObj.at("channelCount").get<std::string>()),
                 .bufferLength = std::stoull(continuousObj.at("bufferLength").get<std::string>()),
                 .descriptorCount = std::stoull(continuousObj.at("descriptorCount").get<std::string>()),
+                .ring = regionFromJSON(continuousObj.at("ring")),
+                .descriptors = regionFromJSON(continuousObj.at("descriptors")),
             };
         }
 

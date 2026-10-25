@@ -122,6 +122,11 @@ namespace mxl::lib::fabrics::ofi
         return _layout;
     }
 
+    std::uint32_t MxlRegions::maxSyncBatchSize() const noexcept
+    {
+        return _maxSyncBatchSize;
+    }
+
     MxlRegions mxlFabricsRegionsFromMutableFlow(FlowData& flow)
     {
         auto mxlRegions = mxlFabricsRegionsFromFlow(flow);
@@ -174,7 +179,9 @@ namespace mxl::lib::fabrics::ofi
             }
 
             auto const totalSlices = discreteFlow.grainAt(0)->header.info.totalSlices;
-            return {std::move(regions), DataLayout::fromDiscrete(std::to_array(discreteFlow.flowInfo()->config.discrete.sliceSizes), totalSlices)};
+            return {std::move(regions),
+                DataLayout::fromDiscrete(std::to_array(discreteFlow.flowInfo()->config.discrete.sliceSizes), totalSlices),
+                discreteFlow.flowInfo()->config.common.maxSyncBatchSizeHint};
         }
         else if (mxlIsContinuousDataFormat(static_cast<int>(flow.flowInfo()->config.common.format)))
         {
@@ -189,7 +196,8 @@ namespace mxl::lib::fabrics::ofi
                 Region::Location::host());
 
             return {std::move(regions),
-                DataLayout::fromContinuous(continuousFlow.sampleWordSize(), continuousFlow.channelCount(), continuousFlow.channelBufferLength())};
+                DataLayout::fromContinuous(continuousFlow.sampleWordSize(), continuousFlow.channelCount(), continuousFlow.channelBufferLength()),
+                continuousFlow.flowInfo()->config.common.maxSyncBatchSizeHint};
         }
         else
         {

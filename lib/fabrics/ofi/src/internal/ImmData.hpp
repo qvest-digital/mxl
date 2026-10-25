@@ -55,8 +55,9 @@ namespace mxl::lib::fabrics::ofi
 
     /** \brief Immediate data of an audio descriptor write.
      *
-     * The low 16 bits name the descriptor slot the write filled. The high 16 bits repeat the low 16 bits of the head index written into that
-     * slot, so the target can tell a slot that was overwritten before it read it.
+     * The low 16 bits name the descriptor slot the write filled. Bits 16 to 30 repeat the low 15 bits of the head index written into that
+     * slot, so the target can tell a slot that was overwritten before it read it. Bit 31 is always set. An initiator that writes through a
+     * bounce buffer sends the entry index as immediate data, and entry indices stay below 2^31, so the target tells the two apart by that bit.
      */
     class ImmDataSample
     {
@@ -64,7 +65,7 @@ namespace mxl::lib::fabrics::ofi
         struct Unpacked            /**< Unpacked representation of immediate data. */
         {
             std::uint16_t slot;    /**< The descriptor slot. */
-            std::uint16_t headTag; /**< The low 16 bits of the head index in the slot. */
+            std::uint16_t headTag; /**< The low 15 bits of the head index in the slot. */
         };
 
     public:
@@ -91,10 +92,17 @@ namespace mxl::lib::fabrics::ofi
 
         /** \brief The head tag a head index produces.
          * \param headIndex A head index.
-         * \return Its low 16 bits.
+         * \return Its low 15 bits.
          */
         [[nodiscard]]
         static std::uint16_t headTag(std::uint64_t headIndex) noexcept;
+
+        /** \brief Whether immediate data came from a descriptor write rather than from a write into a bounce buffer entry.
+         * \param data The immediate data of a completion.
+         * \return True if bit 31 is set.
+         */
+        [[nodiscard]]
+        static bool isDescriptor(std::uint32_t data) noexcept;
 
     private:
         std::uint32_t _inner; /**< Packed representation of immediate data. */

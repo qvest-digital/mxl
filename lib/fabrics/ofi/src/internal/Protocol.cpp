@@ -10,7 +10,7 @@
 
 namespace mxl::lib::fabrics::ofi
 {
-    std::unique_ptr<IngressProtocol> selectIngressProtocol(DataLayout const& layout, std::vector<Region> regions)
+    std::unique_ptr<IngressProtocol> selectIngressProtocol(DataLayout const& layout, std::vector<Region> regions, std::uint32_t maxSyncBatchSize)
     {
         if (layout.isDiscrete())
         {
@@ -22,7 +22,7 @@ namespace mxl::lib::fabrics::ofi
             {
                 throw Exception::invalidArgument("Expected exactly 1 region for sample protocol.");
             }
-            return std::make_unique<RMASampleIngressProtocol>(regions.front(), layout.asContinuous());
+            return std::make_unique<RMASampleIngressProtocol>(regions.front(), layout.asContinuous(), maxSyncBatchSize);
         }
         else
         {

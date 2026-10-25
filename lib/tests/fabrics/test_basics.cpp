@@ -8,6 +8,7 @@
 #include <cstring>
 #include <algorithm>
 #include <random>
+#include <string>
 #include <vector>
 #include <uuid.h>
 #include <catch2/catch_message.hpp>
@@ -1212,40 +1213,76 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: TargetInfo 
     REQUIRE(info.continuous->channelCount == flowConfig.continuous.channelCount);
     REQUIRE(info.continuous->bufferLength == flowConfig.continuous.bufferLength);
     REQUIRE(info.continuous->descriptorCount > 0);
-    REQUIRE(!info.bounceBufferInfo);
+    REQUIRE(info.continuous->ring.len == 4 * flowConfig.continuous.channelCount * flowConfig.continuous.bufferLength);
+    REQUIRE(info.continuous->descriptors.len == info.continuous->descriptorCount * 16);
+
+    // The bounce buffer, as targets published it before the layout, for initiators that predate it. Its entries are the only remote regions,
+    // one per entry: such an initiator refuses a target with any other number.
+    REQUIRE(info.bounceBufferInfo);
+    REQUIRE(info.bounceBufferInfo->entryCount > 0);
+    REQUIRE(info.remoteRegions.size() == info.bounceBufferInfo->entryCount);
+    for (auto const& region : info.remoteRegions)
+    {
+        REQUIRE(region.len == info.bounceBufferInfo->entrySize);
+    }
 
     auto const json = info.toJSON();
     auto parsed = picojson::value{};
     REQUIRE(picojson::parse(parsed, json).empty());
     auto root = parsed.get<picojson::object>();
     REQUIRE(root.contains("continuous"));
-    REQUIRE(!root.contains("bounceBufferInfo"));
+    REQUIRE(root.contains("bounceBufferInfo"));
 
-    SECTION("the layout survives a round trip")
+    SECTION("both layouts survive a round trip")
     {
         auto const roundTripped = ofi::TargetInfo::fromJSON(json);
         REQUIRE(roundTripped.continuous == info.continuous);
+        REQUIRE(roundTripped.bounceBufferInfo);
+        REQUIRE(roundTripped.bounceBufferInfo->entryCount == info.bounceBufferInfo->entryCount);
+        REQUIRE(roundTripped.bounceBufferInfo->entrySize == info.bounceBufferInfo->entrySize);
+        REQUIRE(roundTripped.remoteRegions == info.remoteRegions);
         REQUIRE(roundTripped == info);
 
         // An initiator writes into whatever ring the layout describes, so two infos that differ in it are not the same target.
         auto other = roundTripped;
         other.continuous->bufferLength += 1;
         REQUIRE(!(other == info));
+        other = roundTripped;
+        other.continuous->ring.rkey += 1;
+        REQUIRE(!(other == info));
     }
 
     SECTION("a target that predates the layout still parses")
     {
         root.erase("continuous");
-        auto bounce = picojson::object{};
-        bounce["entryCount"] = picojson::value{std::string{"4"}};
-        bounce["entrySize"] = picojson::value{std::string{"3856"}};
-        root["bounceBufferInfo"] = picojson::value{bounce};
 
         auto const old = ofi::TargetInfo::fromJSON(picojson::value{root}.serialize());
         REQUIRE(!old.continuous);
         REQUIRE(old.bounceBufferInfo);
-        REQUIRE(old.bounceBufferInfo->entryCount == 4);
-        REQUIRE(old.bounceBufferInfo->entrySize == 3856);
+        REQUIRE(old.bounceBufferInfo->entryCount == info.bounceBufferInfo->entryCount);
+        REQUIRE(old.bounceBufferInfo->entrySize == info.bounceBufferInfo->entrySize);
+        REQUIRE(old.remoteRegions == info.remoteRegions);
+    }
+
+    SECTION("a target that publishes only the layout parses")
+    {
+        root.erase("bounceBufferInfo");
+        root["regions"] = picojson::value{picojson::array{}};
+
+        auto const direct = ofi::TargetInfo::fromJSON(picojson::value{root}.serialize());
+        REQUIRE(!direct.bounceBufferInfo);
+        REQUIRE(direct.remoteRegions.empty());
+        REQUIRE(direct.continuous == info.continuous);
+    }
+
+    SECTION("a layout of an unknown protocol version is refused")
+    {
+        auto continuous = root.at("continuous").get<picojson::object>();
+        continuous["version"] = picojson::value{std::to_string(ofi::TargetInfoContinuous::ProtocolVersion + 1)};
+        root["continuous"] = picojson::value{continuous};
+
+        auto deserialized = mxlFabricsTargetInfo{};
+        REQUIRE(mxlFabricsTargetInfoFromString(picojson::value{root}.serialize().c_str(), &deserialized) != MXL_STATUS_OK);
     }
 
     mxlFabricsFreeTargetInfo(targetInfo);

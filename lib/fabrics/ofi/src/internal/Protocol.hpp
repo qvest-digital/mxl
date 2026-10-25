@@ -32,7 +32,13 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         virtual std::vector<RemoteRegion> registerMemory(std::shared_ptr<Domain> domain) = 0;
 
+        /** \brief The bounce buffer an initiator that predates TargetInfoContinuous writes into, if this protocol receives audio.
+         */
+        [[nodiscard]]
+        virtual std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo() const = 0;
+
         /** \brief The layout of the audio ring an initiator writes into, if this protocol receives audio.
+         * \pre registerMemory() ran, since the layout holds registered regions.
          */
         [[nodiscard]]
         virtual std::optional<TargetInfoContinuous> continuousInfo() const = 0;
@@ -145,10 +151,11 @@ namespace mxl::lib::fabrics::ofi
     /** \brief Select an appropriate ingress protocol based on the data layout
      * \param layout The data layout.
      * \param regions The regions involved.
+     * \param maxSyncBatchSize The maximum batch size for transfers.
      * \return A unique pointer to the selected ingress protocol.
      */
     [[nodiscard]]
-    std::unique_ptr<IngressProtocol> selectIngressProtocol(DataLayout const& layout, std::vector<Region> regions);
+    std::unique_ptr<IngressProtocol> selectIngressProtocol(DataLayout const& layout, std::vector<Region> regions, std::uint32_t maxSyncBatchSize);
 
     /** \brief Select an appropriate egress protocol based on the data layout
      * \param layout The data layout.

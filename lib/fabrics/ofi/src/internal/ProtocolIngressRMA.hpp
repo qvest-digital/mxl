@@ -74,6 +74,12 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         virtual std::vector<RemoteRegion> registerMemory(std::shared_ptr<Domain> domain) override;
 
+        /** \copydoc IngressProtocol::bounceBufferInfo()
+         * \note This protocol receives grains, so this function returns an empty optional.
+         */
+        [[nodiscard]]
+        virtual std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo() const override;
+
         /** \copydoc IngressProtocol::continuousInfo()
          * \note This protocol receives grains, so this function returns an empty optional.
          */
@@ -122,8 +128,11 @@ namespace mxl::lib::fabrics::ofi
 
     /** \brief Ingress protocol for RMA writer endpoint for audio samples.
      *
-     * The initiator writes samples straight into the flow's ring, then writes {headIndex, count} into one of the descriptor slots registered
-     * here, with immediate data naming the slot. Reading that completion yields the batch; the application commits it.
+     * It serves two kinds of initiator on the same endpoint. One that reads TargetInfoContinuous writes samples straight into the flow's ring,
+     * then writes {headIndex, count} into one of the descriptor slots registered here, with immediate data built by ImmDataSample. One that
+     * predates it writes a batch into an entry of the bounce buffer registered here, with the entry index as immediate data, and the samples
+     * are copied into the ring when the completion is read. Bit 31 of the immediate data tells the two apart. Reading a completion yields the
+     * batch either way; the application commits it.
      */
     class RMASampleIngressProtocol final : public IngressProtocol
     {
@@ -131,16 +140,25 @@ namespace mxl::lib::fabrics::ofi
         /** Construct an RMASampleIngressProtocol with the given region and data layout.
          * \param region The memory region holding the flow's ring. Initiators write samples into it.
          * \param dataLayout The layout of the ring.
+         * \param maxSyncBatchSize The most samples per channel a bounce buffer entry holds.
+         * \throws Exception::invalidArgument if the bounce buffer would need 2^31 entries or more.
          */
-        RMASampleIngressProtocol(Region region, DataLayout::Continuous const& dataLayout);
+        RMASampleIngressProtocol(Region region, DataLayout::Continuous const& dataLayout, std::uint32_t maxSyncBatchSize);
 
         /** \copydoc IngressProtocol::registerMemory()
-         * \note This registers the ring and the descriptor slots, in that order.
+         * \note This registers the bounce buffer entries, the ring and the descriptor slots, in that order, and returns the bounce buffer
+         * entries alone. The ring and the descriptor slots are published through continuousInfo().
          */
         [[nodiscard]]
         virtual std::vector<RemoteRegion> registerMemory(std::shared_ptr<Domain> domain) override;
 
+        /** \copydoc IngressProtocol::bounceBufferInfo()
+         */
+        [[nodiscard]]
+        virtual std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo() const override;
+
         /** \copydoc IngressProtocol::continuousInfo()
+         * \throws Exception::invalidState if registerMemory() has not run.
          */
         [[nodiscard]]
         virtual std::optional<TargetInfoContinuous> continuousInfo() const override;
@@ -152,7 +170,9 @@ namespace mxl::lib::fabrics::ofi
         /** \copydoc IngressProtocol::read()
          * \throws Exception::invalidState if the completion has no immediate data, or the descriptor slot it names was overwritten before it
          * was read.
-         * \throws Exception::invalidArgument if the slot does not exist or the descriptor in it describes no batch the ring can hold.
+         * \throws Exception::invalidArgument if the slot does not exist or the descriptor in it describes no batch the ring can hold, or the
+         * bounce buffer entry holds more samples than the ring or the entry.
+         * \throws std::out_of_range if the bounce buffer entry does not exist.
          */
         [[nodiscard]]
         virtual std::optional<Target::ReadResult> read(Endpoint const& endpoint, Completion const& completion) override;
@@ -175,11 +195,23 @@ namespace mxl::lib::fabrics::ofi
         void postReceives(Endpoint const& endpoint, std::size_t count);
         bool tryPostOne(Endpoint const& endpoint);
 
+        /** \brief Read the batch a descriptor write announced.
+         */
+        [[nodiscard]]
+        Target::SampleReadResult readDescriptor(std::uint32_t immData) const;
+
+        /** \brief Helper function to create an AudioBounceBuffer based on the given audio data layout and maximum synchronous batch size.
+         * Entries are as big as the maximum number of samples that can be transferred in a single batch, which is determined by maxSyncBatchSize.
+         * The number of entries is determined by how many batches are needed to cover the entire history buffer.
+         */
+        static AudioBounceBuffer makeAudioBounceBuffer(DataLayout::Continuous const& layout, std::uint32_t maxSyncBatchSize);
+
     private:
-        Region _region;                              /**< The flow's ring. */
-        DataLayout::Continuous _layout;              /**< Layout of the ring. */
-        std::vector<AudioEntryHeader> _descriptors;  /**< Descriptor slots, written by initiators. */
-        bool _isMemoryRegistered;                    /**< Whether registerMemory() ran. */
-        std::optional<ImmediateDataPool> _immData{}; /**< Receives for immediate data, where the provider needs them. */
+        AudioBounceBuffer _bounceBuffer;                   /**< Entries written by initiators that predate TargetInfoContinuous. */
+        Region _region;                                    /**< The flow's ring. */
+        DataLayout::Continuous _layout;                    /**< Layout of the ring. */
+        std::vector<AudioEntryHeader> _descriptors;        /**< Descriptor slots, written by initiators. */
+        std::optional<TargetInfoContinuous> _continuous{}; /**< The published layout, set once registerMemory() ran. */
+        std::optional<ImmediateDataPool> _immData{};       /**< Receives for immediate data, where the provider needs them. */
     };
 }

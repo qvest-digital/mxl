@@ -33,13 +33,19 @@ namespace mxl::lib::fabrics::ofi
         : _inner{data}
     {}
 
+    namespace
+    {
+        constexpr auto DescriptorFlag = std::uint32_t{1U} << 31U;
+        constexpr auto HeadTagMask = std::uint32_t{0x7FFFU};
+    }
+
     ImmDataSample::ImmDataSample(std::size_t slot, std::uint64_t headIndex) noexcept
-        : _inner{static_cast<std::uint32_t>(slot & 0xFFFFU) | (static_cast<std::uint32_t>(headTag(headIndex)) << 16U)}
+        : _inner{DescriptorFlag | static_cast<std::uint32_t>(slot & 0xFFFFU) | (static_cast<std::uint32_t>(headTag(headIndex)) << 16U)}
     {}
 
     ImmDataSample::Unpacked ImmDataSample::unpack() const noexcept
     {
-        return Unpacked{.slot = static_cast<std::uint16_t>(_inner & 0xFFFFU), .headTag = static_cast<std::uint16_t>(_inner >> 16U)};
+        return Unpacked{.slot = static_cast<std::uint16_t>(_inner & 0xFFFFU), .headTag = static_cast<std::uint16_t>((_inner >> 16U) & HeadTagMask)};
     }
 
     std::uint32_t ImmDataSample::data() const noexcept
@@ -49,6 +55,11 @@ namespace mxl::lib::fabrics::ofi
 
     std::uint16_t ImmDataSample::headTag(std::uint64_t headIndex) noexcept
     {
-        return static_cast<std::uint16_t>(headIndex & 0xFFFFU);
+        return static_cast<std::uint16_t>(headIndex & HeadTagMask);
+    }
+
+    bool ImmDataSample::isDescriptor(std::uint32_t data) noexcept
+    {
+        return (data & DescriptorFlag) != 0;
     }
 }

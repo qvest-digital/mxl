@@ -310,13 +310,13 @@ MSG Send/Recv | Send/Recv | Yes | No | Yes | No
 Considering the trade-offs, Remote Write is chosen as the primary protocol, but falls back to Send/Recv if Remote Write is not available.
 
 ### 7.3 - Direct writes and descriptors
-The target publishes the layout of its ring in its TargetInfo: sample size, channel count, samples per channel, and a number of descriptor slots. Its remote regions are the ring and an array of descriptor slots, each 16 bytes holding a head index and a count. The two rings can differ in length, because each domain sizes the history of its flows.
+The target publishes the layout of its ring in its TargetInfo, under the `continuous` key: a protocol version, sample size, channel count, samples per channel, a number of descriptor slots, and two remote regions, the ring and an array of descriptor slots, each 16 bytes holding a head index and a count. An initiator refuses a layout of a version it does not speak. The two rings can differ in length, because each domain sizes the history of its flows.
 
-For a batch, the initiator cuts every channel where either ring wraps and writes the pieces from its ring into the target's ring. It packs as many pieces into one write as the provider's `tx_attr->iov_limit`, `tx_attr->rma_iov_limit` and `ep_attr->max_msg_size` allow. It then writes the head index and count of the batch into a descriptor slot, with immediate data naming the slot and the low 16 bits of the head index. The completion of that write tells the target that the batch has landed; the target checks the descriptor and returns it, and the application commits it with OpenSamples and CommitSamples.
+For a batch, the initiator cuts every channel where either ring wraps and writes the pieces from its ring into the target's ring. It packs as many pieces into one write as the provider's `tx_attr->iov_limit`, `tx_attr->rma_iov_limit` and `ep_attr->max_msg_size` allow. It then writes the head index and count of the batch into a descriptor slot, with immediate data naming the slot in its low 16 bits and the low 15 bits of the head index in bits 16 to 30. Bit 31 is set. The completion of that write tells the target that the batch has landed; the target checks the descriptor and returns it, and the application commits it with OpenSamples and CommitSamples.
 
 The target's writer commits batches in the order their descriptors arrive and zero-fills samples skipped between two commits, so a descriptor must arrive after its data and after the descriptor before it. A connected endpoint (verbs RC, tcp) places writes in the order they are posted, so the descriptor follows its data at once. A connectionless endpoint (EFA) does not, so the descriptor is posted only once every earlier write has completed; every write asks for `FI_DELIVERY_COMPLETE`. Batches that arrive meanwhile are merged into one, at most half the target ring long.
 
-Targets that predate this layout publish a bounce buffer instead. An initiator still sends to them by copying a batch into a staging copy of a bounce buffer entry and writing it as one write; the target copies it into its ring. An initiator that predates the layout refuses a target that publishes no bounce buffer.
+Initiators that predate this layout write through a bounce buffer, and refuse a target that publishes none. A target therefore also publishes one, as targets did before the layout: `bounceBufferInfo` holds the entry count and size, and the TargetInfo's remote regions are the entries and nothing else, because those initiators refuse a target with more regions than entries. Each entry holds a header and up to the flow's sync batch size of samples per channel, and there are as many entries as it takes to hold the ring. Such an initiator copies a batch into a staging copy of an entry, the header first and then every channel's samples in turn, writes it as one write with the entry index as immediate data, and the target copies the entry into its ring when it reads the completion. Entry indices stay below 2^31, so bit 31 of the immediate data tells the target which kind of write completed, and both kinds of initiator can write to the same target. The bounce buffer costs each audio target the size of its ring again, rounded up to whole entries, plus 16 bytes per entry, and one memory registration per entry. An initiator sends to a target that publishes only a bounce buffer the same way.
 
 ## 8. Transfers summary
 
@@ -327,16 +327,17 @@ Targets that predate this layout publish a bounce buffer instead. An initiator s
 | Discrete | Nx Remote Write to Media Buffer<br>1x Remote Write with Imm Data (last) | Nothing | When tx or rx maxmium message size < transfer size |
 | Discrete | 1x Remote Write to Media Buffer (color)<br>1x Remote Write with ImmData to Media Buffer (alpha) | Nothing | When doing slice transfer with an Alpha plane present |
 | Continuous | Nx Remote Write to Media Buffer<br>1x Remote Write with ImmData to a descriptor slot | Nothing | N depends on where the rings wrap and on the provider's iov and message size limits |
+| Continuous | Copy into a staging entry<br>1x Remote Write with ImmData to a bounce buffer entry | Copy to the media flow buffer | When the initiator or the target predates the ring layout |
 
 ## 9. Memory Registration
-RDMA operations require memory registration. A target registers its Media Flow Buffers, and for a continuous flow its descriptor slots as well. An initiator registers its Media Flow Buffers, and per target the memory it writes descriptors or bounce buffer entries from.
+RDMA operations require memory registration. A target registers its Media Flow Buffers, and for a continuous flow its bounce buffer entries and descriptor slots as well. An initiator registers its Media Flow Buffers, and per target the memory it writes descriptors or bounce buffer entries from.
 
 ## 10. Current Implementation Status
 
 The currently implemented feature set covers the optimal paths for both discrete and continuous flows:
 
 - **Discrete flow (grains):** Transferred using Remote Write (RMA) directly into the target's media buffer, with immediate data carrying the grain index. This is the optimal path that requires no involvement from the target during the transfer itself.
-- **Continuous flow (samples):** Transferred using Remote Write (RMA) directly into the target's media buffer, followed by a write into a descriptor slot with immediate data. The target copies nothing.
+- **Continuous flow (samples):** Transferred using Remote Write (RMA) directly into the target's media buffer, followed by a write into a descriptor slot with immediate data. The target copies nothing. Initiators and targets that predate this path transfer through a bounce buffer on the target, which the target copies from.
 
 Send/Recv and tag-matching fallback paths are not yet implemented. Send/Recv without tag matching requires a bouncing buffer and an extra copy, while tag matching requires explicit synchronization between initiator and target and may not benefit from hardware acceleration depending on the NIC. Given these trade-offs and that Remote Write covers the primary use cases, the fallback paths have been deferred.
 

@@ -74,7 +74,7 @@ namespace mxl::lib::fabrics::ofi
         endpoint.enable();
 
         auto mxlRegions = MxlRegions::forWriter(config.writer);
-        auto protocol = selectIngressProtocol(mxlRegions.dataLayout(), mxlRegions.regions());
+        auto protocol = selectIngressProtocol(mxlRegions.dataLayout(), mxlRegions.regions(), mxlRegions.maxSyncBatchSize());
 
         // Start receiving. The connected path does this once the peer
         // arrives; a connectionless endpoint has no such moment, and
@@ -89,8 +89,10 @@ namespace mxl::lib::fabrics::ofi
         // this host, with nothing on either side reporting an error.
         protocol->start(endpoint);
 
+        // The audio layout holds registered regions, so the memory is registered first.
+        auto remoteRegions = protocol->registerMemory(domain);
         auto targetInfo = std::make_unique<TargetInfo>(
-            endpoint.id(), endpoint.localAddress(), *provider, protocol->registerMemory(domain), std::nullopt, protocol->continuousInfo());
+            endpoint.id(), endpoint.localAddress(), *provider, std::move(remoteRegions), protocol->bounceBufferInfo(), protocol->continuousInfo());
 
         struct MakeUniqueEnabler : RDMTarget
         {

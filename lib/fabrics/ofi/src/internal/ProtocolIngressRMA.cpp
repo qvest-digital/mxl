@@ -49,6 +49,11 @@ namespace mxl::lib::fabrics::ofi
         return domain->remoteRegions();
     }
 
+    std::optional<TargetInfoBounceBufferInfo> RMAGrainIngressProtocol::bounceBufferInfo() const
+    {
+        return std::nullopt;
+    }
+
     std::optional<TargetInfoContinuous> RMAGrainIngressProtocol::continuousInfo() const
     {
         return std::nullopt;
@@ -175,19 +180,31 @@ namespace mxl::lib::fabrics::ofi
 
     //
     // RMASampleIngressProtocol implementations below
-    RMASampleIngressProtocol::RMASampleIngressProtocol(Region region, DataLayout::Continuous const& layout)
-        : _region{region}
+    RMASampleIngressProtocol::RMASampleIngressProtocol(Region region, DataLayout::Continuous const& layout, std::uint32_t maxSyncBatchSize)
+        : _bounceBuffer{makeAudioBounceBuffer(layout, maxSyncBatchSize)}
+        , _region{region}
         , _layout{layout}
         , _descriptors(DefaultDescriptorCount)
-        , _isMemoryRegistered{false}
-    {}
+    {
+        // Bit 31 of the immediate data marks a descriptor write, so an entry index must never set it.
+        if (_bounceBuffer.entryCount() > 0x7FFF'FFFFU)
+        {
+            throw Exception::invalidArgument("An audio bounce buffer of {} entries cannot be told apart from descriptor writes.",
+                _bounceBuffer.entryCount());
+        }
+    }
 
     std::vector<RemoteRegion> RMASampleIngressProtocol::registerMemory(std::shared_ptr<Domain> domain)
     {
-        if (_isMemoryRegistered)
+        if (_continuous)
         {
             throw Exception::invalidState("Memory is already registered.");
         }
+
+        // The bounce buffer entries come first and alone in the regions returned: an initiator that predates TargetInfoContinuous writes
+        // entry i into region i, and refuses a target with more regions than entries.
+        auto const entryCount = _bounceBuffer.entryCount();
+        domain->registerRegions(_bounceBuffer.getRegions(), FI_REMOTE_WRITE);
 
         auto const descriptors = Region{reinterpret_cast<std::uintptr_t>(_descriptors.data()),
             _descriptors.size() * sizeof(AudioEntryHeader),
@@ -195,20 +212,42 @@ namespace mxl::lib::fabrics::ofi
             nullptr,
             Region::Location::host()};
         domain->registerRegions({_region, descriptors}, FI_REMOTE_WRITE);
-        _isMemoryRegistered = true;
 
-        return domain->remoteRegions();
-    }
+        auto regions = domain->remoteRegions();
+        if (regions.size() != (entryCount + 2))
+        {
+            throw Exception::invalidState("Expected {} registered regions on the domain, found {}.", entryCount + 2, regions.size());
+        }
 
-    std::optional<TargetInfoContinuous> RMASampleIngressProtocol::continuousInfo() const
-    {
-        return TargetInfoContinuous{
+        _continuous = TargetInfoContinuous{
             .version = TargetInfoContinuous::ProtocolVersion,
             .sampleSize = _layout.sampleSize,
             .channelCount = _layout.channelCount,
             .bufferLength = _layout.bufferLength,
             .descriptorCount = _descriptors.size(),
+            .ring = regions[entryCount],
+            .descriptors = regions[entryCount + 1],
         };
+
+        regions.resize(entryCount);
+        return regions;
+    }
+
+    std::optional<TargetInfoBounceBufferInfo> RMASampleIngressProtocol::bounceBufferInfo() const
+    {
+        auto const entrySize = _bounceBuffer.entrySize(); // All entries have the same size, we can just take the size of the first one
+        auto const entryCount = _bounceBuffer.entryCount();
+
+        return TargetInfoBounceBufferInfo{.entryCount = entryCount, .entrySize = entrySize};
+    }
+
+    std::optional<TargetInfoContinuous> RMASampleIngressProtocol::continuousInfo() const
+    {
+        if (!_continuous)
+        {
+            throw Exception::invalidState("The audio layout is known only once memory is registered.");
+        }
+        return _continuous;
     }
 
     void RMASampleIngressProtocol::start(Endpoint const& endpoint)
@@ -259,7 +298,20 @@ namespace mxl::lib::fabrics::ofi
             throw Exception::invalidState("Received a completion without immediate data.");
         }
 
-        auto const [slot, headTag] = ImmDataSample{static_cast<std::uint32_t>(*immData)}.unpack();
+        auto const data = static_cast<std::uint32_t>(*immData);
+        if (ImmDataSample::isDescriptor(data))
+        {
+            return readDescriptor(data);
+        }
+
+        // An initiator that predates TargetInfoContinuous wrote the batch into a bounce buffer entry, named by the immediate data.
+        auto const header = _bounceBuffer.unpack(data, _region);
+        return std::make_optional<Target::SampleReadResult>(header.headIndex, header.count);
+    }
+
+    Target::SampleReadResult RMASampleIngressProtocol::readDescriptor(std::uint32_t immData) const
+    {
+        auto const [slot, headTag] = ImmDataSample{immData}.unpack();
         if (slot >= _descriptors.size())
         {
             throw Exception::invalidArgument("Audio descriptor slot {} does not exist, there are {}.", slot, _descriptors.size());
@@ -288,7 +340,7 @@ namespace mxl::lib::fabrics::ofi
                 _layout.bufferLength);
         }
 
-        return std::make_optional<Target::SampleReadResult>(descriptor.headIndex, descriptor.count);
+        return Target::SampleReadResult{descriptor.headIndex, descriptor.count};
     }
 
     bool RMASampleIngressProtocol::canReadGrains() const noexcept
@@ -350,4 +402,20 @@ namespace mxl::lib::fabrics::ofi
         }
     }
 
+    AudioBounceBuffer RMASampleIngressProtocol::makeAudioBounceBuffer(DataLayout::Continuous const& layout, std::uint32_t maxSyncBatchSize)
+    {
+        auto const oneSampleSize = layout.sampleSize * layout.channelCount;
+        auto const entrySize = oneSampleSize * maxSyncBatchSize;
+        auto const historySize = layout.bufferLength * oneSampleSize;
+
+        auto const entryCount = (historySize + entrySize - 1U) / entrySize; // ceil(historySize / entrySize)
+
+        MXL_INFO("Creating audio bounce buffer with entry size {} bytes and entry count {}, maxSyncBatchSize {} historySize {} bufferLength {}",
+            entrySize,
+            entryCount,
+            maxSyncBatchSize,
+            historySize,
+            layout.bufferLength);
+        return {entryCount, entrySize, layout};
+    }
 }
