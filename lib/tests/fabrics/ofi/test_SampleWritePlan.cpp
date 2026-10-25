@@ -277,6 +277,20 @@ TEST_CASE("ofi: sample write plan for half the target ring across its wrap", "[o
     REQUIRE(writes.size() == 2 * 2);
 }
 
+TEST_CASE("ofi: sample write plan within the limits efa reports", "[ofi][SampleWritePlan]")
+{
+    // fi_info on a g7.8xlarge, provider efa, FI_EP_RDM: iov_limit 4, rma_iov_limit 1, max_msg_size 8928.
+    // Eight channels of 4800 float samples, across the wrap of both rings, so every channel is two remote
+    // ranges and every range larger than one message.
+    auto rings = Rings{8, 19456, 10240};
+    auto const limits = WriteLimits{.iovLimit = 4, .rmaIovLimit = 1, .maxMsgSize = 8928};
+
+    auto const writes = transfer(rings, 10240 + 2400, 4800, limits);
+
+    // 4800 samples of 4 bytes split at the wrap into 2400 and 2400, each 9600 bytes: two messages each.
+    REQUIRE(writes.size() == 8 * 2 * 2);
+}
+
 TEST_CASE("ofi: sample write plan rejects what it cannot plan", "[ofi][SampleWritePlan]")
 {
     auto rings = Rings{2, 16, 8};
