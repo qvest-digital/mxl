@@ -284,8 +284,12 @@ namespace mxl::lib
 #elif defined __linux__
                 if (::inotify_rm_watch(_inotifyFd, wd) == -1)
                 {
+                    // EINVAL is what the kernel answers once the watched file is gone, which is the normal case here: the last writer
+                    // deletes the flow before it leaves the watcher. Asking the filesystem whether the file is still there would walk to
+                    // a flow name that is usually gone, and on a domain that waits for a missing flow name to appear, that walk blocks
+                    // for the whole wait.
                     auto const error = errno;
-                    if ((error != EINVAL) || std::filesystem::exists(record.fileName))
+                    if (error != EINVAL)
                     {
                         MXL_WARN("Failed to remove inotify watch (wd={}) for '{}': {}", wd, record.fileName, std::strerror(error));
                     }
