@@ -347,14 +347,19 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC target a
                         : mxlFabricsTargetReadGrainNonBlocking(target, &targetIndex);
     };
 
-    // Connect an initiator to the published target info and transfer one grain through it.
-    auto const connectAndTransfer = [&](mxlFabricsInitiator initiator, std::uint64_t grainIndex)
+    auto const progressOf = [&](mxlFabricsInitiator initiator)
     {
-        auto const progress = [&]()
+        return [&, initiator]()
         {
             return blocking ? mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count())
                             : mxlFabricsInitiatorMakeProgressNonBlocking(initiator);
         };
+    };
+
+    // Transfer one grain through an initiator that is connected to the target.
+    auto const transfer = [&](mxlFabricsInitiator initiator, std::uint64_t grainIndex)
+    {
+        auto const progress = progressOf(initiator);
 
         // The target reports the index from the grain header the transfer carries, so the grain must exist in the shared ring first.
         auto grainInfo = mxlGrainInfo{};
@@ -362,16 +367,22 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC target a
         REQUIRE(mxlFlowWriterOpenGrain(writer, grainIndex, &grainInfo, &payload) == MXL_STATUS_OK);
         REQUIRE(mxlFlowWriterCommitGrain(writer, &grainInfo) == MXL_STATUS_OK);
 
-        REQUIRE(mxlFabricsInitiatorSetup(initiator, &initiatorConfig, nullptr) == MXL_STATUS_OK);
-        REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
-
-        waitForConnection([&]() { targetRead(); }, progress);
         waitForTransferStart([&]() { targetRead(); },
             [&]() { requireProgressStatus(progress, "initiator"); },
             [&]() { return mxlFabricsInitiatorTransferGrain(initiator, grainIndex, 0, 1); });
         waitForTransferCompletion([&]() { requireProgressStatus(progress, "initiator"); }, targetRead);
 
         REQUIRE(targetIndex == grainIndex);
+    };
+
+    // Connect an initiator to the published target info and transfer one grain through it.
+    auto const connectAndTransfer = [&](mxlFabricsInitiator initiator, std::uint64_t grainIndex)
+    {
+        REQUIRE(mxlFabricsInitiatorSetup(initiator, &initiatorConfig, nullptr) == MXL_STATUS_OK);
+        REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
+
+        waitForConnection([&]() { targetRead(); }, progressOf(initiator));
+        transfer(initiator, grainIndex);
     };
 
     mxlFabricsInitiator first;
@@ -398,15 +409,33 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC target a
         }
     }
 
+    auto firstHoldsConnection = false;
     SECTION("while the first initiator still holds its connection")
     {
-        // The first initiator is not progressed or shut down from here on, so the target never gets a shutdown event for its connection,
-        // as when the source node fails.
+        // The first initiator is not progressed or shut down until the second one has connected, so the target never gets a shutdown event
+        // for its connection, as when the source node fails.
+        firstHoldsConnection = true;
     }
 
     mxlFabricsInitiator second;
     REQUIRE(mxlFabricsCreateInitiator(fabrics, &second) == MXL_STATUS_OK);
     connectAndTransfer(second, 2);
+
+    if (firstHoldsConnection)
+    {
+        // The target closed the first initiator's connection when it accepted the second. The first initiator gets a shutdown event and
+        // drops the target, so its progress reports that it has none left. It does not connect again, so the second initiator keeps the
+        // target.
+        pollUntilSuccess(
+            [&]()
+            {
+                targetRead();
+                return mxlFabricsInitiatorMakeProgressNonBlocking(first) == MXL_ERR_INTERRUPTED;
+            },
+            POLL_TIMEOUT,
+            "First initiator did not drop the target in 5 seconds");
+        transfer(second, 3);
+    }
 
     REQUIRE(mxlFabricsDestroyInitiator(fabrics, second) == MXL_STATUS_OK);
     REQUIRE(mxlFabricsDestroyInitiator(fabrics, first) == MXL_STATUS_OK);
