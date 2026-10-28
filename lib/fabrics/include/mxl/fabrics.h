@@ -313,6 +313,31 @@ extern "C"
     mxlStatus mxlFabricsInitiatorRemoveTarget(mxlFabricsInitiator in_initiator, mxlFabricsTargetInfo in_targetInfo);
 
     /**
+     * The state of a target added to an initiator, as last seen by mxlFabricsInitiatorMakeProgress*().
+     */
+    typedef enum mxlFabricsTargetState_t
+    {
+        MXL_FABRICS_TARGET_STATE_CONNECTING = 0, /**< Not yet able to receive transfers: the connection is being set up. */
+        MXL_FABRICS_TARGET_STATE_CONNECTED = 1,  /**< Transfers posted to the initiator are sent to this target. */
+        MXL_FABRICS_TARGET_STATE_CLOSING = 2,    /**< The connection is being shut down; no new transfers are sent to this target. */
+    } mxlFabricsTargetState;
+
+    /**
+     * Get the state of a target added to an initiator. This function is always non-blocking and makes no progress of its own.
+     *
+     * A connection-oriented initiator whose connection to a target is closed or fails does not connect to that target again: it drops
+     * the target during the next call to mxlFabricsInitiatorMakeProgress*(), and from then on this function reports MXL_ERR_NOT_FOUND
+     * for it, as it does for a target that was never added or that was removed. Adding the target again sets up a new connection.
+     * \param in_initiator A valid fabrics initiator
+     * \param in_targetInfo The target information the target was added with.
+     * \param out_state The state of the target. Unchanged unless the function returns MXL_STATUS_OK.
+     * \return MXL_STATUS_OK, MXL_ERR_NOT_FOUND if the initiator holds no such target, or another result code. \see mxlStatus
+     */
+    MXL_EXPORT
+    mxlStatus mxlFabricsInitiatorGetTargetState(mxlFabricsInitiator in_initiator, mxlFabricsTargetInfo in_targetInfo,
+        mxlFabricsTargetState* out_state);
+
+    /**
      * Enqueue a transfer operation to all added targets. This function is always non-blocking. The transfer operation might be started right
      * away, but is only guaranteed to have completed after mxlFabricsInitiatorMakeProgress*() no longer returns MXL_ERR_NOT_READY.
      * \param in_initiator A valid fabrics initiator

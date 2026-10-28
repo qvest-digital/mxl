@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <optional>
 #include <random>
 #include <vector>
 #include <uuid.h>
@@ -31,6 +32,19 @@ namespace
 {
     constexpr auto POLL_TIMEOUT = std::chrono::seconds(5);
     constexpr auto BLOCKING_WAIT = std::chrono::milliseconds(20);
+
+    // The state the initiator reports for a target, or nothing when it reports that it holds no such target.
+    std::optional<mxlFabricsTargetState> targetStateOf(mxlFabricsInitiator initiator, mxlFabricsTargetInfo targetInfo)
+    {
+        auto state = mxlFabricsTargetState{};
+        auto const status = mxlFabricsInitiatorGetTargetState(initiator, targetInfo, &state);
+        if (status == MXL_ERR_NOT_FOUND)
+        {
+            return std::nullopt;
+        }
+        REQUIRE(status == MXL_STATUS_OK);
+        return state;
+    }
 
     template<typename ProgressFn>
     void requireProgressStatus(ProgressFn&& progressFn, char const* actor)
@@ -257,7 +271,10 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics connection o
 
         SECTION("initiator add/remove target")
         {
+            REQUIRE_FALSE(targetStateOf(initiator, targetInfo).has_value());
             REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
+            // The connection is only set up by progress calls.
+            REQUIRE(targetStateOf(initiator, targetInfo) == MXL_FABRICS_TARGET_STATE_CONNECTING);
 
             SECTION("non-blocking")
             {
@@ -273,7 +290,21 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics connection o
                     [&]() { return mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count()); });
             }
 
+            REQUIRE(targetStateOf(initiator, targetInfo) == MXL_FABRICS_TARGET_STATE_CONNECTED);
             REQUIRE(mxlFabricsInitiatorRemoveTarget(initiator, targetInfo) == MXL_STATUS_OK);
+            REQUIRE(targetStateOf(initiator, targetInfo) == MXL_FABRICS_TARGET_STATE_CLOSING);
+
+            // Once the shutdown completes the initiator no longer holds the target.
+            std::uint64_t dummyIndex;
+            pollUntilSuccess(
+                [&]()
+                {
+                    mxlFabricsTargetReadGrainNonBlocking(target, &dummyIndex);
+                    mxlFabricsInitiatorMakeProgressNonBlocking(initiator);
+                    return !targetStateOf(initiator, targetInfo).has_value();
+                },
+                POLL_TIMEOUT,
+                "Initiator still held the removed target after 5 seconds");
         }
 
         REQUIRE(mxlFabricsFreeTargetInfo(targetInfo) == MXL_STATUS_OK);
@@ -434,6 +465,9 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC target a
             },
             POLL_TIMEOUT,
             "First initiator did not drop the target in 5 seconds");
+        // The first initiator does not connect again, and says so: a caller that wants the target back has to add it again.
+        REQUIRE_FALSE(targetStateOf(first, targetInfo).has_value());
+        REQUIRE(targetStateOf(second, targetInfo) == MXL_FABRICS_TARGET_STATE_CONNECTED);
         transfer(second, 3);
     }
 
@@ -504,7 +538,9 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics connectionle
     SECTION("initiator add/remove target")
     {
         REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
+        REQUIRE(targetStateOf(initiator, targetInfo) == MXL_FABRICS_TARGET_STATE_CONNECTING);
         REQUIRE(mxlFabricsInitiatorRemoveTarget(initiator, targetInfo) == MXL_STATUS_OK);
+        REQUIRE_FALSE(targetStateOf(initiator, targetInfo).has_value());
     }
     REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
 
@@ -513,6 +549,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics connectionle
         std::uint64_t dummyIndex;
         waitForConnection([&]() { mxlFabricsTargetReadGrainNonBlocking(target, &dummyIndex); },
             [&]() { return mxlFabricsInitiatorMakeProgressNonBlocking(initiator); });
+        REQUIRE(targetStateOf(initiator, targetInfo) == MXL_FABRICS_TARGET_STATE_CONNECTED);
     }
 
     SECTION("blocking")
@@ -520,6 +557,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics connectionle
         std::uint64_t dummyIndex;
         waitForConnection([&]() { mxlFabricsTargetReadGrain(target, BLOCKING_WAIT.count(), &dummyIndex); },
             [&]() { return mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count()); });
+        REQUIRE(targetStateOf(initiator, targetInfo) == MXL_FABRICS_TARGET_STATE_CONNECTED);
     }
 
     REQUIRE(mxlFabricsDestroyInitiator(fabrics, initiator) == MXL_STATUS_OK);

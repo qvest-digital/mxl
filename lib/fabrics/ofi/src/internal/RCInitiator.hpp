@@ -51,6 +51,11 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         bool canEvict() const noexcept;
 
+        /** \brief The state reported through mxlFabricsInitiatorGetTargetState(). Not meaningful once canEvict() returns true.
+         */
+        [[nodiscard]]
+        mxlFabricsTargetState state() const noexcept;
+
         /** \brief Called to transition the endpoint out of the flushing state to the done state. If the endpoint is in any other state, this is a
          * no-op.
          */
@@ -182,6 +187,11 @@ namespace mxl::lib::fabrics::ofi
         /** \copydoc Initiator::removeTarget()
          */
         virtual void removeTarget(TargetInfo const& targetInfo) final;
+
+        /** \copydoc Initiator::targetState()
+         */
+        [[nodiscard]]
+        virtual std::optional<mxlFabricsTargetState> targetState(TargetInfo const& targetInfo) const final;
 
         /** \copydoc Initiator::transferGrain()
          */

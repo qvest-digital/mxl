@@ -45,6 +45,19 @@ namespace mxl::lib::fabrics::ofi
         return std::holds_alternative<Done>(_state);
     }
 
+    mxlFabricsTargetState RCInitiatorEndpoint::state() const noexcept
+    {
+        if (std::holds_alternative<Connected>(_state))
+        {
+            return MXL_FABRICS_TARGET_STATE_CONNECTED;
+        }
+        if (std::holds_alternative<Flushing>(_state))
+        {
+            return MXL_FABRICS_TARGET_STATE_CLOSING;
+        }
+        return MXL_FABRICS_TARGET_STATE_CONNECTING;
+    }
+
     bool RCInitiatorEndpoint::hasPendingWork() const noexcept
     {
         return std::visit(
@@ -355,6 +368,19 @@ namespace mxl::lib::fabrics::ofi
         {
             throw Exception::notFound("Target with id {} not found", targetInfo.id);
         }
+    }
+
+    std::optional<mxlFabricsTargetState> RCInitiator::targetState(TargetInfo const& targetInfo) const
+    {
+        // An endpoint that is done is evicted by the next progress call and never connects again, so it is reported as gone already: a
+        // caller can then tell a target it has to add again from one that is still connecting.
+        if (auto target = std::ranges::find_if(_targets, [&targetInfo](auto const& item) { return item.second.info().id == targetInfo.id; });
+            (target != _targets.end()) && !target->second.canEvict())
+        {
+            return target->second.state();
+        }
+
+        return std::nullopt;
     }
 
     void RCInitiator::transferGrain(std::uint64_t grainIndex, std::uint16_t startSlice, std::uint16_t endSlice)

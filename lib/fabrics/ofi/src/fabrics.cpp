@@ -471,6 +471,30 @@ mxlStatus mxlFabricsInitiatorRemoveTarget(mxlFabricsInitiator in_initiator, mxlF
 }
 
 extern "C" MXL_EXPORT
+mxlStatus mxlFabricsInitiatorGetTargetState(mxlFabricsInitiator in_initiator, mxlFabricsTargetInfo in_targetInfo, mxlFabricsTargetState* out_state)
+{
+    if ((in_initiator == nullptr) || (in_targetInfo == nullptr) || (out_state == nullptr))
+    {
+        return MXL_ERR_INVALID_ARG;
+    }
+
+    return ofi::try_run(
+        [&]()
+        {
+            auto targetInfo = ofi::TargetInfo::fromAPI(in_targetInfo);
+            auto const state = ofi::InitiatorWrapper::fromAPI(in_initiator)->targetState(*targetInfo);
+            if (!state)
+            {
+                return MXL_ERR_NOT_FOUND;
+            }
+            *out_state = *state;
+
+            return MXL_STATUS_OK;
+        },
+        "Failed to get the state of a target");
+}
+
+extern "C" MXL_EXPORT
 mxlStatus mxlFabricsInitiatorTransferGrain(mxlFabricsInitiator in_initiator, uint64_t in_grainIndex, uint16_t in_startSlice, uint16_t in_endSlice)
 {
     if (in_initiator == nullptr)

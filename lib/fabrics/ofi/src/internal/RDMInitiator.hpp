@@ -36,6 +36,11 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         bool isIdle() const noexcept;
 
+        /** \brief The state reported through mxlFabricsInitiatorGetTargetState().
+         */
+        [[nodiscard]]
+        mxlFabricsTargetState state() const noexcept;
+
         /** \brief Try to activate the endpoint.
          *
          * The endpoint is activated by adding the remote address to the address vector.
@@ -124,6 +129,11 @@ namespace mxl::lib::fabrics::ofi
         /** \copydoc Initiator::removeTarget()
          */
         virtual void removeTarget(TargetInfo const& remoteTargetInfo) final;
+
+        /** \copydoc Initiator::targetState()
+         */
+        [[nodiscard]]
+        virtual std::optional<mxlFabricsTargetState> targetState(TargetInfo const& targetInfo) const final;
 
         virtual void shutdown() final;
 
