@@ -69,6 +69,27 @@ target_link_libraries(mxl-event-ipc-worker
             mxl
     )
 add_dependencies(mxl-tests mxl-event-ipc-worker)
+
+# Interposes the stat family and open to record which paths a flow writer's release walks to, so it runs in an executable of its own
+# rather than changing those calls for every other test.
+add_executable(mxl-release-walk-tests)
+set_target_properties(mxl-release-walk-tests
+        PROPERTIES
+            CXX_EXTENSIONS               OFF
+            CXX_STANDARD                 ${MXL_CXX_STANDARD}
+    )
+target_sources(mxl-release-walk-tests
+        PRIVATE
+            test_release_walks.cpp
+    )
+target_link_libraries(mxl-release-walk-tests
+        PRIVATE
+            mxl
+            mxl-internal-headers
+            stduuid
+            Catch2::Catch2WithMain
+            ${CMAKE_DL_LIBS}
+    )
 target_compile_definitions(mxl-tests
         PRIVATE
             MXL_EVENT_IPC_WORKER="$<TARGET_FILE:mxl-event-ipc-worker>"
@@ -78,6 +99,7 @@ target_compile_definitions(mxl-tests
 include(CTest)
 include(Catch)
 catch_discover_tests(mxl-tests)
+catch_discover_tests(mxl-release-walk-tests)
 
 set(MXL_LINKER_FLAG "")
 if(CMAKE_LINKER_TYPE STREQUAL "LLD")
