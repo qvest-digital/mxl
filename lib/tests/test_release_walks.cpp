@@ -104,7 +104,7 @@ extern "C"
 
     __attribute__((visibility("default"))) int open(char const* path, int flags, ...)
     {
-        auto args = va_list{};
+        va_list args;
         va_start(args, flags);
         auto const mode = ((flags & O_CREAT) != 0) ? static_cast<mode_t>(va_arg(args, int)) : mode_t{0};
         va_end(args);
@@ -113,7 +113,7 @@ extern "C"
 
     __attribute__((visibility("default"))) int openat(int dirfd, char const* path, int flags, ...)
     {
-        auto args = va_list{};
+        va_list args;
         va_start(args, flags);
         auto const mode = ((flags & O_CREAT) != 0) ? static_cast<mode_t>(va_arg(args, int)) : mode_t{0};
         va_end(args);
