@@ -293,6 +293,10 @@ namespace mxl::lib
                     {
                         MXL_WARN("Failed to remove inotify watch (wd={}) for '{}': {}", wd, record.fileName, std::strerror(error));
                     }
+                    else
+                    {
+                        MXL_DEBUG("Inotify watch (wd={}) for '{}' is already gone (EINVAL)", wd, record.fileName);
+                    }
                 }
 #endif
             }

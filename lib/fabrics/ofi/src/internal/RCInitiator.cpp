@@ -27,7 +27,7 @@ namespace mxl::lib::fabrics::ofi
     namespace
     {
         // Rank of an endpoint's state when several endpoints carry the same target: a target removed and added again leaves the old
-        // endpoint behind until it is done and evicted, and the one added last is the target's.
+        // endpoint behind until it is done and evicted, and the most advanced live endpoint is the target's.
         int liveRank(mxlFabricsTargetState state) noexcept
         {
             switch (state)

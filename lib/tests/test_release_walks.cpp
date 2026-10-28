@@ -119,6 +119,51 @@ extern "C"
         va_end(args);
         return noteMissing(next<int (*)(int, char const*, int, ...)>("openat")(dirfd, path, flags, mode), path);
     }
+
+    // The 64-bit and fortified entry points are separate symbols, which a caller built with _FILE_OFFSET_BITS=64 or
+    // _FORTIFY_SOURCE reaches instead of the ones above.
+    __attribute__((visibility("default"))) int stat64(char const* path, struct stat64* st)
+    {
+        return noteMissing(next<int (*)(char const*, struct stat64*)>("stat64")(path, st), path);
+    }
+
+    __attribute__((visibility("default"))) int lstat64(char const* path, struct stat64* st)
+    {
+        return noteMissing(next<int (*)(char const*, struct stat64*)>("lstat64")(path, st), path);
+    }
+
+    __attribute__((visibility("default"))) int fstatat64(int dirfd, char const* path, struct stat64* st, int flags)
+    {
+        return noteMissing(next<int (*)(int, char const*, struct stat64*, int)>("fstatat64")(dirfd, path, st, flags), path);
+    }
+
+    __attribute__((visibility("default"))) int open64(char const* path, int flags, ...)
+    {
+        va_list args;
+        va_start(args, flags);
+        auto const mode = ((flags & O_CREAT) != 0) ? static_cast<mode_t>(va_arg(args, int)) : mode_t{0};
+        va_end(args);
+        return noteMissing(next<int (*)(char const*, int, ...)>("open64")(path, flags, mode), path);
+    }
+
+    __attribute__((visibility("default"))) int openat64(int dirfd, char const* path, int flags, ...)
+    {
+        va_list args;
+        va_start(args, flags);
+        auto const mode = ((flags & O_CREAT) != 0) ? static_cast<mode_t>(va_arg(args, int)) : mode_t{0};
+        va_end(args);
+        return noteMissing(next<int (*)(int, char const*, int, ...)>("openat64")(dirfd, path, flags, mode), path);
+    }
+
+    __attribute__((visibility("default"))) int __open_2(char const* path, int flags)
+    {
+        return noteMissing(next<int (*)(char const*, int)>("__open_2")(path, flags), path);
+    }
+
+    __attribute__((visibility("default"))) int __openat_2(int dirfd, char const* path, int flags)
+    {
+        return noteMissing(next<int (*)(int, char const*, int)>("__openat_2")(dirfd, path, flags), path);
+    }
 }
 
 TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Releasing the last writer walks to no missing flow name", "[writer][release]")
