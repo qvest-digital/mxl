@@ -206,7 +206,9 @@ extern "C"
      *    receivers, or when per-completion processing is slow, to avoid completion queue overflow. See the "Receiving grains" section
      *    of docs/Fabrics.md. When omitted, an implementation default is used.
      * \param out_info An mxlFabricsTargetInfo_t object which should be shared to a remote initiator which this target should receive data from. The
-     * object must be freed with mxlFabricsFreeTargetInfo().
+     * object must be freed with mxlFabricsFreeTargetInfo(). The address in it stays valid until the target is destroyed. A connection-oriented
+     * target keeps listening on that address, and accepts an initiator that connects while another one is connected by closing the older
+     * connection.
      * \return The result code. \see mxlStatus
      */
     MXL_EXPORT
