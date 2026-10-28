@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "RCTarget.hpp"
-
 #include <algorithm>
 #include <mxl-internal/Logging.hpp>
 #include <rdma/fabric.h>
@@ -63,7 +62,8 @@ namespace mxl::lib::fabrics::ofi
         : _proto(std::move(proto))
         , _domain(std::move(domain))
         , _setupOptions(options)
-        , _state(WaitForConnectionRequest{std::move(pep)})
+        , _pep(std::move(pep))
+        , _state(WaitForConnectionRequest{})
     {}
 
     std::optional<Target::ReadResult> RCTarget::read()
@@ -84,49 +84,43 @@ namespace mxl::lib::fabrics::ofi
     {
         auto result = std::optional<Target::ReadResult>{std::nullopt};
 
+        // A connection request is taken in every state, not only while waiting for one. An initiator that connects while another connection
+        // is up or being set up replaces it: the older peer may have gone away without a shutdown event reaching this target.
+        if (!std::holds_alternative<WaitForConnectionRequest>(_state))
+        {
+            auto request = _pep.eventQueue()->read();
+            if (request && request->isConnReq())
+            {
+                MXL_INFO("Connection request while a connection is up or being set up. Closing it to accept the new one.");
+                // Close the current endpoint, and with it its queues, before the new one is created.
+                _state = WaitForConnectionRequest{};
+                _state = accept(*request);
+                return result;
+            }
+        }
+
         _state = std::visit(
             overloaded{[](std::monostate) -> State { throw Exception::invalidState("Target is in an invalid state an can no longer make progress"); },
                 [&](WaitForConnectionRequest state) -> State
                 {
                     try
                     {
-                        auto event = readEventQueue<queueReadMode>(*state.pep.eventQueue(), timeout);
+                        auto event = readEventQueue<queueReadMode>(*_pep.eventQueue(), timeout);
 
                         // Check if the entry is available and is a connection request
                         if (event && event->isConnReq())
                         {
-                            auto remoteAddr = FabricAddress::fromDestination(event->connReq().info());
-                            MXL_INFO("Accept connection from: {}", remoteAddr.toString());
-
-                            auto cqAttr = CompletionQueue::Attributes::defaults();
-                            // The receive window can put that many completions in the queue
-                        // before anything reads it, so the queue must be able to
-                        // hold them however its depth was chosen.
-                        cqAttr.size = std::max(_setupOptions.cqDepth.value_or(CompletionQueue::Attributes::DEFAULT_SIZE),
-                            2 * DefaultReceiveDepth);
-                            auto cq = CompletionQueue::open(_domain, cqAttr);
-                            auto endpoint = Endpoint::create(_domain, state.pep.id(), event->connReq().info());
-                            endpoint.bind(cq, FI_RECV);
-
-                            auto eq = EventQueue::open(_domain->fabric(), EventQueue::Attributes::defaults());
-                            endpoint.bind(eq);
-
-                            // we are now ready to accept the connection
-                            endpoint.accept();
-                            MXL_DEBUG("Accepted the connection waiting for connected event notification.");
-
-                            // Return the new state as the variant type
-                            return RCTarget::WaitForConnection{std::move(endpoint)};
+                            return accept(*event);
                         }
 
-                        return WaitForConnectionRequest{.pep = std::move(state.pep)};
+                        return state;
                     }
                     catch (FabricException const& ex)
                     {
                         if (ex.isInterrupted())
                         {
                             result = std::make_optional<Target::Interrupted>();
-                            return WaitForConnectionRequest{.pep = std::move(state.pep)};
+                            return state;
                         }
 
                         throw;
@@ -171,8 +165,8 @@ namespace mxl::lib::fabrics::ofi
                         auto [completion, event] = readEndpointQueues<queueReadMode>(state.ep, timeout);
                         if (event && event.value().isShutdown())
                         {
-                            MXL_INFO("Remote endpoint has shutdown the connection. Transitioning to listening to new connection.");
-                            return WaitForConnectionRequest{.pep = makeListener(state.ep.domain()->fabric())};
+                            MXL_INFO("Remote endpoint has shutdown the connection. Waiting for a new connection request.");
+                            return WaitForConnectionRequest{};
                         }
 
                         if (completion)
@@ -196,6 +190,40 @@ namespace mxl::lib::fabrics::ofi
             std::move(_state));
 
         return result;
+    }
+
+    RCTarget::State RCTarget::accept(Event const& request)
+    {
+        auto remoteAddr = FabricAddress::fromDestination(request.connReq().info());
+        MXL_INFO("Accept connection from: {}", remoteAddr.toString());
+
+        try
+        {
+            auto cqAttr = CompletionQueue::Attributes::defaults();
+            // The receive window can put that many completions in the queue
+            // before anything reads it, so the queue must be able to
+            // hold them however its depth was chosen.
+            cqAttr.size = std::max(_setupOptions.cqDepth.value_or(CompletionQueue::Attributes::DEFAULT_SIZE), 2 * DefaultReceiveDepth);
+            auto cq = CompletionQueue::open(_domain, cqAttr);
+            auto endpoint = Endpoint::create(_domain, _pep.id(), request.connReq().info());
+            endpoint.bind(cq, FI_RECV);
+
+            // The endpoint has an event queue of its own, so events left for an endpoint that was closed are closed with it.
+            auto eq = EventQueue::open(_domain->fabric(), EventQueue::Attributes::defaults());
+            endpoint.bind(eq);
+
+            // we are now ready to accept the connection
+            endpoint.accept();
+            MXL_DEBUG("Accepted the connection waiting for connected event notification.");
+
+            return WaitForConnection{std::move(endpoint)};
+        }
+        catch (FabricException const& ex)
+        {
+            // The peer can give up between its request and the accept. The listener is unaffected, so the target waits for the next request.
+            MXL_WARN("Failed to accept the connection from {}: {}", remoteAddr.toString(), ex.what());
+            return WaitForConnectionRequest{};
+        }
     }
 
     PassiveEndpoint RCTarget::makeListener(std::shared_ptr<Fabric> const& fabric)
