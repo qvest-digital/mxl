@@ -397,15 +397,18 @@ namespace mxl::lib::fabrics::ofi
 
     void RCInitiator::removeTarget(TargetInfo const& targetInfo)
     {
-        if (auto target = std::ranges::find_if(_targets, [&targetInfo](auto const& item) { return item.second.info().id == targetInfo.id; });
-            target != _targets.end())
+        // The endpoint that stands for the target, not whichever the map holds first: shutting down a done endpoint left behind by an
+        // earlier removal does nothing and would leave the target attached. A target held only by such an endpoint is removed already.
+        auto target = liveEndpointFor(_targets, targetInfo.id);
+        if (target == _targets.end())
         {
-            target->second.shutdown();
+            target = std::ranges::find_if(_targets, [&targetInfo](auto const& item) { return item.second.info().id == targetInfo.id; });
         }
-        else
+        if (target == _targets.end())
         {
             throw Exception::notFound("Target with id {} not found", targetInfo.id);
         }
+        target->second.shutdown();
     }
 
     std::optional<mxlFabricsTargetState> RCInitiator::targetState(TargetInfo const& targetInfo) const

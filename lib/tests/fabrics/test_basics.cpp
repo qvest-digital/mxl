@@ -549,6 +549,10 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC initiato
         REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
         REQUIRE(targetStateOf(initiator, targetInfo) == MXL_FABRICS_TARGET_STATE_CONNECTING);
 
+        // Removing it again shuts down the endpoint that was added, not the one already done.
+        REQUIRE(mxlFabricsInitiatorRemoveTarget(initiator, targetInfo) == MXL_STATUS_OK);
+        REQUIRE_FALSE(targetStateOf(initiator, targetInfo).has_value());
+
         REQUIRE(mxlFabricsDestroyInitiator(fabrics, initiator) == MXL_STATUS_OK);
     }
 
