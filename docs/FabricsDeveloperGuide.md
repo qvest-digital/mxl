@@ -219,6 +219,17 @@ mxlFabricsInitiatorRemoveTarget(initiator, remoteTargetInfo);
 
 This is also non-blocking. The disconnection completes when `mxlFabricsInitiatorMakeProgress*()` stops returning `MXL_ERR_NOT_READY`. No new transfers will be queued to the removed target, but in-flight transfers may still complete during progress calls.
 
+The state of each added target can be read without making progress:
+
+```c
+mxlFabricsTargetState state;
+if (mxlFabricsInitiatorGetTargetState(initiator, remoteTargetInfo, &state) == MXL_ERR_NOT_FOUND) {
+    // the initiator no longer holds this target
+}
+```
+
+It reports `MXL_FABRICS_TARGET_STATE_CONNECTING`, `MXL_FABRICS_TARGET_STATE_CONNECTED` or `MXL_FABRICS_TARGET_STATE_CLOSING`. A connection-oriented initiator whose connection to a target is closed or fails does not connect to that target again: it drops the target during the next progress call, and the target then reports `MXL_ERR_NOT_FOUND`, as one that was never added or that was removed does. Adding the target again sets up a new connection. Progress on an initiator that still holds other targets does not show that one of them was dropped.
+
 ## Progress
 
 Progress on media transfers, connection establishment and teardown is driven by polling:

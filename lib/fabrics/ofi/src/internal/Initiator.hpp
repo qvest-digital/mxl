@@ -58,6 +58,14 @@ namespace mxl::lib::fabrics::ofi
          */
         virtual void removeTarget(TargetInfo const& targetInfo) = 0;
 
+        /** \brief The state of an added target, or nothing if the initiator holds no such target, including one whose connection has
+         * ended.
+         *
+         * Not holding the target is an answer a caller polls for rather than a failure, so it is not reported by an exception.
+         */
+        [[nodiscard]]
+        virtual std::optional<mxlFabricsTargetState> targetState(TargetInfo const& targetInfo) const = 0;
+
         /** \brief Transfer a grain to all targets.
          *
          * This is a non-blocking operation. The transfer is complete only after makeProgress() or makeProgressBlocking() returns false.
@@ -152,6 +160,11 @@ namespace mxl::lib::fabrics::ofi
         /** \copydoc Initiator::removeTarget()
          */
         void removeTarget(TargetInfo const& targetInfo);
+
+        /** \copydoc Initiator::targetState()
+         */
+        [[nodiscard]]
+        std::optional<mxlFabricsTargetState> targetState(TargetInfo const& targetInfo) const;
 
         /** \copydoc Initiator::transferGrain()
          */

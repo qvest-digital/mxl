@@ -42,6 +42,19 @@ namespace mxl::lib::fabrics::ofi
         return std::holds_alternative<Idle>(_state);
     }
 
+    mxlFabricsTargetState RDMInitiatorTarget::state() const noexcept
+    {
+        if (std::holds_alternative<Activated>(_state))
+        {
+            return MXL_FABRICS_TARGET_STATE_CONNECTED;
+        }
+        if (std::holds_alternative<Done>(_state))
+        {
+            return MXL_FABRICS_TARGET_STATE_CLOSING;
+        }
+        return MXL_FABRICS_TARGET_STATE_CONNECTING;
+    }
+
     void RDMInitiatorTarget::activate(Endpoint& ep)
     {
         _state = std::visit(
@@ -213,6 +226,20 @@ namespace mxl::lib::fabrics::ofi
         auto& remote = findRemoteByEndpoint(targetInfo.id);
         remote.shutdown(_endpoint);
         _targets.erase(_remoteEndpoints.extract(targetInfo.id).mapped());
+    }
+
+    std::optional<mxlFabricsTargetState> RDMInitiator::targetState(TargetInfo const& targetInfo) const
+    {
+        auto const remote = _remoteEndpoints.find(targetInfo.id);
+        if (remote != _remoteEndpoints.end())
+        {
+            if (auto const target = _targets.find(remote->second); target != _targets.end())
+            {
+                return target->second.state();
+            }
+        }
+
+        return std::nullopt;
     }
 
     void RDMInitiator::shutdown()

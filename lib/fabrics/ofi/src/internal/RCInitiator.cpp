@@ -24,6 +24,44 @@
 
 namespace mxl::lib::fabrics::ofi
 {
+    namespace
+    {
+        // Rank of an endpoint's state when several endpoints carry the same target: a target removed and added again leaves the old
+        // endpoint behind until it is done and evicted, and the one added last is the target's.
+        int liveRank(mxlFabricsTargetState state) noexcept
+        {
+            switch (state)
+            {
+                case MXL_FABRICS_TARGET_STATE_CONNECTED:  return 3;
+                case MXL_FABRICS_TARGET_STATE_CONNECTING: return 2;
+                case MXL_FABRICS_TARGET_STATE_CLOSING:    return 1;
+            }
+            return 0;
+        }
+
+        // The endpoint that stands for the target with the given id: of the endpoints for it that are not done, the one in the most
+        // advanced state. The targets map is keyed by a random token, so its order says nothing about which endpoint is the old one.
+        template<typename Targets>
+        auto liveEndpointFor(Targets& targets, Endpoint::Id id)
+        {
+            auto best = targets.end();
+            auto bestRank = 0;
+            for (auto it = targets.begin(); it != targets.end(); ++it)
+            {
+                if ((it->second.info().id != id) || it->second.canEvict())
+                {
+                    continue;
+                }
+                if (auto const rank = liveRank(it->second.state()); rank > bestRank)
+                {
+                    best = it;
+                    bestRank = rank;
+                }
+            }
+            return best;
+        }
+    }
+
     RCInitiatorEndpoint::RCInitiatorEndpoint(Endpoint ep, std::unique_ptr<EgressProtocol> proto, TargetInfo info)
         : _state(Idle{.ep = std::move(ep), .idleSince = std::chrono::steady_clock::time_point{}})
         , _info(std::move(info))
@@ -43,6 +81,19 @@ namespace mxl::lib::fabrics::ofi
     bool RCInitiatorEndpoint::canEvict() const noexcept
     {
         return std::holds_alternative<Done>(_state);
+    }
+
+    mxlFabricsTargetState RCInitiatorEndpoint::state() const noexcept
+    {
+        if (std::holds_alternative<Connected>(_state))
+        {
+            return MXL_FABRICS_TARGET_STATE_CONNECTED;
+        }
+        if (std::holds_alternative<Flushing>(_state))
+        {
+            return MXL_FABRICS_TARGET_STATE_CLOSING;
+        }
+        return MXL_FABRICS_TARGET_STATE_CONNECTING;
     }
 
     bool RCInitiatorEndpoint::hasPendingWork() const noexcept
@@ -346,15 +397,30 @@ namespace mxl::lib::fabrics::ofi
 
     void RCInitiator::removeTarget(TargetInfo const& targetInfo)
     {
-        if (auto target = std::ranges::find_if(_targets, [&targetInfo](auto const& item) { return item.second.info().id == targetInfo.id; });
-            target != _targets.end())
+        // The endpoint that stands for the target, not whichever the map holds first: shutting down a done endpoint left behind by an
+        // earlier removal does nothing and would leave the target attached. A target held only by such an endpoint is removed already.
+        auto target = liveEndpointFor(_targets, targetInfo.id);
+        if (target == _targets.end())
         {
-            target->second.shutdown();
+            target = std::ranges::find_if(_targets, [&targetInfo](auto const& item) { return item.second.info().id == targetInfo.id; });
         }
-        else
+        if (target == _targets.end())
         {
             throw Exception::notFound("Target with id {} not found", targetInfo.id);
         }
+        target->second.shutdown();
+    }
+
+    std::optional<mxlFabricsTargetState> RCInitiator::targetState(TargetInfo const& targetInfo) const
+    {
+        // An endpoint that is done is evicted by the next progress call and never connects again, so it is reported as gone already: a
+        // caller can then tell a target it has to add again from one that is still connecting.
+        if (auto const target = liveEndpointFor(_targets, targetInfo.id); target != _targets.end())
+        {
+            return target->second.state();
+        }
+
+        return std::nullopt;
     }
 
     void RCInitiator::transferGrain(std::uint64_t grainIndex, std::uint16_t startSlice, std::uint16_t endSlice)
