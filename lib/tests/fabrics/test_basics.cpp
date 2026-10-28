@@ -481,6 +481,85 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC target a
     REQUIRE(mxlDestroyInstance(instance) == MXL_STATUS_OK);
 }
 
+// A target removed before it connected leaves its endpoint behind, done, until the next progress call evicts it. Added again before
+// that, the target has two endpoints with the same id, held in a map keyed by a random token, so either may come first. The state the
+// initiator reports, and the endpoint a removal shuts down, have to be the added one's whichever order they are held in, so each check
+// runs on several fresh initiators.
+TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC initiator reports a target added again before it connected",
+    "[fabrics][connected][state]")
+{
+    auto instance = mxlCreateInstance(domain.c_str(), "");
+
+    auto flowDef = mxl::tests::readFile("../data/v210_flow.json");
+    auto const flowId = "5fbec3b1-1b0f-417d-9059-8b94a47197ed";
+
+    mxlFlowWriter writer;
+    REQUIRE(mxlCreateFlowWriter(instance, flowDef.c_str(), nullptr, &writer, nullptr, nullptr) == MXL_STATUS_OK);
+
+    mxlFlowReader reader;
+    REQUIRE(mxlCreateFlowReader(instance, flowId, "", &reader) == MXL_STATUS_OK);
+
+    mxlFabricsInstance fabrics;
+    REQUIRE(mxlFabricsCreateInstance(instance, nullptr, &fabrics) == MXL_STATUS_OK);
+
+    mxlFabricsTarget target;
+    REQUIRE(mxlFabricsCreateTarget(fabrics, &target) == MXL_STATUS_OK);
+
+    auto targetConfig = mxlFabricsTargetConfig{
+        .version = MXL_FABRICS_API_VERSION,
+        .interface = {.version = MXL_FABRICS_API_VERSION,
+                      .provider = MXL_FABRICS_PROVIDER_TCP,
+                      .caps =
+                {
+                    .version = MXL_FABRICS_API_VERSION,
+                    .flags = MXL_FABRICS_IFACE_CAP_BLOCKING_OPERATIONS | MXL_FABRICS_IFACE_CAP_REMOTE_WRITE,
+                    .maxMessageSize = 0,
+                }, .address = {.node = "127.0.0.1", .service = nullptr},
+                      .attr = nullptr},
+        .writer = writer,
+    };
+    mxlFabricsTargetInfo targetInfo;
+    REQUIRE(mxlFabricsTargetSetup(target, &targetConfig, nullptr, &targetInfo) == MXL_STATUS_OK);
+
+    auto initiatorConfig = mxlFabricsInitiatorConfig{
+        .version = MXL_FABRICS_API_VERSION,
+        .interface = {.version = MXL_FABRICS_API_VERSION,
+                      .provider = MXL_FABRICS_PROVIDER_TCP,
+                      .caps =
+                {
+                    .version = MXL_FABRICS_API_VERSION,
+                    .flags = MXL_FABRICS_IFACE_CAP_BLOCKING_OPERATIONS | MXL_FABRICS_IFACE_CAP_REMOTE_WRITE,
+                    .maxMessageSize = 0,
+                }, .address = {.node = "127.0.0.1", .service = nullptr},
+                      .attr = nullptr},
+        .reader = reader,
+    };
+
+    constexpr auto initiators = 20;
+    for (auto i = 0; i < initiators; ++i)
+    {
+        mxlFabricsInitiator initiator;
+        REQUIRE(mxlFabricsCreateInitiator(fabrics, &initiator) == MXL_STATUS_OK);
+        REQUIRE(mxlFabricsInitiatorSetup(initiator, &initiatorConfig, nullptr) == MXL_STATUS_OK);
+
+        // No progress call runs in between, so the removed endpoint is still held, done.
+        REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
+        REQUIRE(mxlFabricsInitiatorRemoveTarget(initiator, targetInfo) == MXL_STATUS_OK);
+        REQUIRE_FALSE(targetStateOf(initiator, targetInfo).has_value());
+        REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
+        REQUIRE(targetStateOf(initiator, targetInfo) == MXL_FABRICS_TARGET_STATE_CONNECTING);
+
+        REQUIRE(mxlFabricsDestroyInitiator(fabrics, initiator) == MXL_STATUS_OK);
+    }
+
+    REQUIRE(mxlFabricsFreeTargetInfo(targetInfo) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsDestroyTarget(fabrics, target) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsDestroyInstance(fabrics) == MXL_STATUS_OK);
+    REQUIRE(mxlReleaseFlowReader(instance, reader) == MXL_STATUS_OK);
+    REQUIRE(mxlReleaseFlowWriter(instance, writer) == MXL_STATUS_OK);
+    REQUIRE(mxlDestroyInstance(instance) == MXL_STATUS_OK);
+}
+
 TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics connectionless activation tests", "[fabrics][connectionless][activation]")
 {
     auto instance = mxlCreateInstance(domain.c_str(), "");
