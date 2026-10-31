@@ -204,13 +204,13 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC initiato
     "[fabrics][flow-control]")
 {
     // No progress is made while the grains are offered, so no completion is read and the windows stay full. The grains that do not fit
-    // are skipped per target and the call still succeeds for the targets that took them.
+    // are skipped and counted per target, and the call reports not-ready.
     auto rig = Rig{domain, 2, MXL_FABRICS_PROVIDER_TCP, "127.0.0.1", R"({"grainsInFlight": 3})"};
     rig.addAllAndConnect();
 
     for (std::uint64_t grain = 0; grain < 7; ++grain)
     {
-        REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, grain, 0, V210_SLICES) == MXL_STATUS_OK);
+        REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, grain, 0, V210_SLICES) == ((grain < 3) ? MXL_STATUS_OK : MXL_ERR_NOT_READY));
     }
     for (std::size_t i = 0; i < rig.targets.size(); ++i)
     {

@@ -65,9 +65,15 @@ namespace mxl::lib::fabrics::ofi
             }
             _grain = localIndex;
             _grainOpen = _window.open();
+            if (!_grainOpen)
+            {
+                throw Exception::make(
+                    MXL_ERR_NOT_READY, "{} grains to a target are in flight, skipping grain {}.", _window.maxTransfers(), localIndex);
+            }
         }
         if (!_grainOpen)
         {
+            // The grain was skipped at its first chunk, which reported it.
             return;
         }
 
@@ -80,7 +86,7 @@ namespace mxl::lib::fabrics::ofi
         {
             _window.abandon();
             _grainOpen = false;
-            return;
+            throw Exception::make(MXL_ERR_NOT_READY, "{} writes to a target are in flight, skipping grain {}.", _window.maxWrites(), localIndex);
         }
 
         auto const localGrain = _localRegions[localIndex % _localRegions.size()];
@@ -133,14 +139,14 @@ namespace mxl::lib::fabrics::ofi
         }
         catch (Exception const& e)
         {
-            // A full send queue costs this target the grain, not the caller the call: the other targets of the initiator still get it.
-            if (!isQueueFull(e))
+            // A full send queue costs this target the grain. The initiator still offers it to its other targets and reports not-ready
+            // afterwards.
+            if (isQueueFull(e))
             {
-                throw;
+                _window.abandon();
+                _grainOpen = false;
             }
-            _window.abandon();
-            _grainOpen = false;
-            return;
+            throw;
         }
 
         if (endsTransfer)
@@ -340,12 +346,11 @@ namespace mxl::lib::fabrics::ofi
         }
         catch (Exception const& e)
         {
-            if (!isQueueFull(e))
+            if (isQueueFull(e))
             {
-                throw;
+                _window.abandon();
             }
-            _window.abandon();
-            return;
+            throw;
         }
         _window.wrote(true, true, headIndex, entrySizeRequired - sizeof(AudioEntryHeader));
 

@@ -467,9 +467,9 @@ namespace mxl::lib::fabrics::ofi
 
     void RCInitiator::transferGrain(std::uint64_t grainIndex, std::uint16_t startSlice, std::uint16_t endSlice)
     {
-        // Post a transfer work item to all targets. A target that is not connected, or whose window or send queue is full, skips the
-        // grain and counts it; the others still get it, and the call does not fail for it. Any other failure of one target is reported to
-        // the caller once every target has been offered the transfer.
+        // Post a transfer work item to all targets. A target that is not connected skips the grain; one whose window or send queue is
+        // full skips it too and reports not-ready. Either way the skip is counted for that target and the others still get the grain.
+        // The first failure is reported to the caller once every target has been offered the transfer.
         auto failure = std::exception_ptr{};
         for (auto& [_, target] : _targets)
         {
@@ -505,7 +505,7 @@ namespace mxl::lib::fabrics::ofi
 
     void RCInitiator::transferSamples(std::uint64_t headIndex, std::size_t count)
     {
-        // As for grains: a target that cannot take the batch skips it, and any other failure is reported after every target was offered it.
+        // As for grains: a target that cannot take the batch skips it, and the first failure is reported after every target was offered it.
         auto failure = std::exception_ptr{};
         for (auto& [_, target] : _targets)
         {

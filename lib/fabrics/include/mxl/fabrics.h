@@ -287,9 +287,11 @@ extern "C"
      *    it for "maxTargets" targets with every write they may have in flight, because a connection that fails reports every write it
      *    holds there.
      *  - "grainsInFlight" (number from 1 to MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT, default 8): how many grains one target may have in
-     *    flight. A grain offered to a target that already has this many in flight is skipped for that target and counted in
-     *    mxlFabricsTargetStats.transfersSkipped; the other targets still get it. Sample batches use MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT,
-     *    or fewer when the target's bounce buffer has fewer entries.
+     *    flight. A grain offered to a target that already has this many in flight, or whose send queue is full, is skipped for that
+     *    target and counted in mxlFabricsTargetStats.transfersSkipped. The other targets still get it, and
+     *    mxlFabricsInitiatorTransferGrain() then returns MXL_ERR_NOT_READY: calling it again for the same grain sends it again to every
+     *    target. Sample batches use MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT, or fewer when the target's bounce buffer has fewer entries;
+     *    a batch that does not fit is skipped for that target without an error, as before.
      *  - "chunksPerGrain" (number >= 1, default 1): how many calls to mxlFabricsInitiatorTransferGrain() send one grain. With more than
      *    one, only the call whose end slice is the last slice of the grain reports a completion and carries immediate data, so the
      *    target sees the grain once, when all of it has arrived. With 1, every call reports a completion and carries immediate data,
