@@ -213,7 +213,7 @@ jobs:
             'mxl-build-image-${{ matrix.architecture }}:latest' \
             bash -c "
               cd '/workspace/mxl/build/${{ matrix.compiler }}' && \
-              ctest --output-junit test-results.xml
+              ctest --output-on-failure --output-junit test-results.xml
             "
 
       - name: Publish Test Results
