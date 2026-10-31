@@ -7,8 +7,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <memory>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <mxl-internal/FlowReader.hpp>
 #include <mxl-internal/Instance.hpp>

@@ -112,7 +112,7 @@ namespace mxl::lib::fabrics::ofi
         {
             Endpoint ep;
             std::chrono::steady_clock::time_point idleSince; /**< Time since the endpoint has been idle. */
-            std::chrono::steady_clock::duration delay{};      /**< How long to stay idle before connecting again. */
+            std::chrono::steady_clock::duration delay{};     /**< How long to stay idle before connecting again. */
         };
 
         /** \brief The connecting state.
@@ -168,8 +168,8 @@ namespace mxl::lib::fabrics::ofi
         Idle restart(Endpoint const& endpoint);
 
     private:
-        State _state;     /**< The internal state object. */
-        TargetInfo _info; /**< The target info of the remote endpoint */
+        State _state;                                          /**< The internal state object. */
+        TargetInfo _info;                                      /**< The target info of the remote endpoint */
         std::unique_ptr<EgressProtocol> _proto;
         std::chrono::steady_clock::duration _reconnectDelay{}; /**< The wait before the next reconnection. Zero while connected. */
     };
@@ -281,10 +281,10 @@ namespace mxl::lib::fabrics::ofi
 
     private:
         std::shared_ptr<Domain> _domain;
-        std::shared_ptr<CompletionQueue> _cq; /**< Completion Queue shared by all endpoints. */
-        std::shared_ptr<EventQueue> _eq;      /**< Event Queue shared by all endpoints. */
+        std::shared_ptr<CompletionQueue> _cq;                        /**< Completion Queue shared by all endpoints. */
+        std::shared_ptr<EventQueue> _eq;                             /**< Event Queue shared by all endpoints. */
         std::unique_ptr<EgressProtocolTemplate> _proto;
-        std::size_t _maxTargets; /**< Endpoints the completion queue was sized for. */
+        std::size_t _maxTargets;                                     /**< Endpoints the completion queue was sized for. */
 
         std::map<Completion::Token, RCInitiatorEndpoint> _targets{}; /**< Targets managed by this initiator. */
     };

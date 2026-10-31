@@ -32,11 +32,11 @@ namespace
             .provider = provider,
             .caps =
                 {
-                    .version = MXL_FABRICS_API_VERSION,
-                    .flags = MXL_FABRICS_IFACE_CAP_BLOCKING_OPERATIONS | MXL_FABRICS_IFACE_CAP_REMOTE_WRITE,
-                    .maxMessageSize = 0,
-                },
-            .address = {.node = node, .service = nullptr},
+                       .version = MXL_FABRICS_API_VERSION,
+                       .flags = MXL_FABRICS_IFACE_CAP_BLOCKING_OPERATIONS | MXL_FABRICS_IFACE_CAP_REMOTE_WRITE,
+                       .maxMessageSize = 0,
+                       },
+            .address = {.node = node,                                  .service = nullptr                                                                                                              },
             .attr = nullptr,
         };
     }

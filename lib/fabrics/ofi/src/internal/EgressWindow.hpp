@@ -100,10 +100,10 @@ namespace mxl::lib::fabrics::ofi
         std::size_t _maxTransfers;
         std::size_t _maxWrites;
 
-        std::deque<Segment> _segments{};    /**< One entry per completion still expected, oldest first. */
-        std::size_t _openTransfers{0};      /**< Transfers posted since the last write that reports a completion. */
-        std::size_t _openWrites{0};         /**< Writes posted since the last write that reports a completion. */
-        std::size_t _openBytes{0};          /**< Payload of those writes. */
+        std::deque<Segment> _segments{}; /**< One entry per completion still expected, oldest first. */
+        std::size_t _openTransfers{0};   /**< Transfers posted since the last write that reports a completion. */
+        std::size_t _openWrites{0};      /**< Writes posted since the last write that reports a completion. */
+        std::size_t _openBytes{0};       /**< Payload of those writes. */
         std::size_t _transfersInFlight{0};
         std::size_t _writesInFlight{0};
 

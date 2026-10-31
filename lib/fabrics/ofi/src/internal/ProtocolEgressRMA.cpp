@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ProtocolEgressRMA.hpp"
-#include <algorithm>
 #include <cstring>
+#include <algorithm>
 #include <mxl-internal/Logging.hpp>
 #include "AudioBounceBuffer.hpp"
 #include "DataLayout.hpp"
@@ -124,8 +124,8 @@ namespace mxl::lib::fabrics::ofi
                     }
 
                     auto const isLastPlane = (plane == writes - 1);
-                    auto const immData = (isLastPlane && endsTransfer) ? std::make_optional(ImmDataGrain{remoteSlot, sliceRange.end()}.data())
-                                                                       : std::nullopt;
+                    auto const immData =
+                        (isLastPlane && endsTransfer) ? std::make_optional(ImmDataGrain{remoteSlot, sliceRange.end()}.data()) : std::nullopt;
 
                     write(ep, localGrain.sub(offset, size), remoteGrain.sub(offset, size), destAddr, immData, isLastPlane, endsTransfer, localIndex);
                 }
@@ -185,7 +185,8 @@ namespace mxl::lib::fabrics::ofi
         return _window.stats();
     }
 
-    RMAGrainEgressProtocolTemplate::RMAGrainEgressProtocolTemplate(DataLayout::Discrete layout, std::vector<Region> regions, EgressConfig const& config)
+    RMAGrainEgressProtocolTemplate::RMAGrainEgressProtocolTemplate(DataLayout::Discrete layout, std::vector<Region> regions,
+        EgressConfig const& config)
         : _layout{layout}
         , _regions{std::move(regions)}
         , _config{config}
