@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ProtocolEgressRMA.hpp"
+#include <algorithm>
 #include <cstring>
 #include <mxl-internal/Logging.hpp>
 #include "AudioBounceBuffer.hpp"
@@ -14,12 +15,24 @@
 namespace mxl::lib::fabrics::ofi
 {
 
+    namespace
+    {
+        /** \brief Whether an exception reports a full send queue rather than a failure.
+         */
+        bool isQueueFull(Exception const& e) noexcept
+        {
+            return e.status() == MXL_ERR_NOT_READY;
+        }
+    }
+
     RMAGrainEgressProtocol::RMAGrainEgressProtocol(Completion::Token token, TargetInfo info, DataLayout::Discrete layout,
-        std::vector<LocalRegion> localRegions)
+        std::vector<LocalRegion> localRegions, EgressConfig const& config, EgressWindow window)
         : _token{token}
         , _remoteInfo{std::move(info)}
         , _layout{layout}
         , _localRegions{std::move(localRegions)}
+        , _config{config}
+        , _window{window}
     {}
 
     void RMAGrainEgressProtocol::registerMemory(std::shared_ptr<Domain>)
@@ -27,55 +40,112 @@ namespace mxl::lib::fabrics::ofi
         // For this protocol, memory registration is completely handled at the protocol template level, so this function doesn't need to do anything.
     }
 
+    void RMAGrainEgressProtocol::write(Endpoint const& ep, LocalRegion const& local, RemoteRegion const& remote, ::fi_addr_t destAddr,
+        std::optional<std::uint32_t> immData, bool last, bool endsTransfer, std::uint64_t index)
+    {
+        // Every write reports a completion on an endpoint without selective completion, so every write is accounted for as one.
+        auto const reportsCompletion = (last && endsTransfer) || !_config.selectiveCompletion;
+        static_cast<void>(ep.write(_token, local, remote, destAddr, immData, reportsCompletion));
+        _window.wrote(reportsCompletion, last && endsTransfer, index, local.len);
+    }
+
     void RMAGrainEgressProtocol::transferGrain(Endpoint const& ep, std::uint64_t localIndex, std::uint64_t remoteIndex, std::uint32_t payloadOffset,
         SliceRange const& sliceRange, ::fi_addr_t destAddr)
     {
+        auto const chunked = _config.chunksPerGrain > 1;
+        auto const endsGrain = sliceRange.end() == _layout.totalSlices;
+
+        // Sent in chunks, a grain is one transfer that its first chunk opens and its last chunk ends. Otherwise every call is a transfer of
+        // its own. A grain whose last chunk never came is given up when the next one starts; its writes are settled by a later completion.
+        if (!chunked || (sliceRange.start() == 0) || (_grain != localIndex))
+        {
+            if (_grainOpen)
+            {
+                _window.abandon();
+            }
+            _grain = localIndex;
+            _grainOpen = _window.open();
+        }
+        if (!_grainOpen)
+        {
+            return;
+        }
+
+        // Without chunks every call ends its transfer. In chunks only the last chunk does, and only it carries immediate data: the
+        // target then sees the grain once, after all of it has arrived, and needs one receive per grain.
+        auto const endsTransfer = !chunked || endsGrain;
+        auto const fullGrain = (sliceRange.start() == 0) && endsGrain;
+        auto const writes = fullGrain ? std::size_t{1} : _layout.activePlaneCount();
+        if (!_window.hasRoomFor(writes))
+        {
+            _window.abandon();
+            _grainOpen = false;
+            return;
+        }
+
         auto const localGrain = _localRegions[localIndex % _localRegions.size()];
         auto const remoteGrain = _remoteInfo.remoteRegions[remoteIndex % _remoteInfo.remoteRegions.size()];
         auto const remoteSlot = remoteIndex % _remoteInfo.remoteRegions.size();
 
-        // Fast path: a full grain is transferred, can do one write no matter how many planes
-        if ((sliceRange.start() == 0) && (sliceRange.end() == _layout.totalSlices))
+        try
         {
-            _pending += ep.write(_token, localGrain, remoteGrain, destAddr, std::make_optional(ImmDataGrain{remoteSlot, _layout.totalSlices}.data()));
-            return;
-        }
-
-        auto const planeCount = _layout.activePlaneCount();
-        for (std::size_t plane = 0; plane < planeCount; ++plane)
-        {
-            auto const sliceSize = _layout.sliceSizes[plane];
-            auto offset = std::uint32_t{0};
-            auto size = std::uint32_t{0};
-
-            if (plane == 0)
+            // Fast path: a full grain is transferred, can do one write no matter how many planes
+            if (fullGrain)
             {
-                // need to include header with slice 0-x
-                if (sliceRange.start() == 0)
-                {
-                    offset = sliceRange.transferOffset(0, sliceSize);
-                    size = sliceRange.transferSize(sliceSize) + payloadOffset;
-                }
-                else
-                {
-                    offset = sliceRange.transferOffset(payloadOffset, sliceSize);
-                    size = sliceRange.transferSize(sliceSize);
-                }
+                write(ep, localGrain, remoteGrain, destAddr, ImmDataGrain{remoteSlot, _layout.totalSlices}.data(), true, endsTransfer, localIndex);
             }
             else
             {
-                auto const planeBase = _layout.planePayloadOffset(plane, payloadOffset);
-                offset = sliceRange.transferOffset(planeBase, sliceSize);
-                size = sliceRange.transferSize(sliceSize);
+                for (std::size_t plane = 0; plane < writes; ++plane)
+                {
+                    auto const sliceSize = _layout.sliceSizes[plane];
+                    auto offset = std::uint32_t{0};
+                    auto size = std::uint32_t{0};
+
+                    if (plane == 0)
+                    {
+                        // need to include header with slice 0-x
+                        if (sliceRange.start() == 0)
+                        {
+                            offset = sliceRange.transferOffset(0, sliceSize);
+                            size = sliceRange.transferSize(sliceSize) + payloadOffset;
+                        }
+                        else
+                        {
+                            offset = sliceRange.transferOffset(payloadOffset, sliceSize);
+                            size = sliceRange.transferSize(sliceSize);
+                        }
+                    }
+                    else
+                    {
+                        auto const planeBase = _layout.planePayloadOffset(plane, payloadOffset);
+                        offset = sliceRange.transferOffset(planeBase, sliceSize);
+                        size = sliceRange.transferSize(sliceSize);
+                    }
+
+                    auto const isLastPlane = (plane == writes - 1);
+                    auto const immData = (isLastPlane && endsTransfer) ? std::make_optional(ImmDataGrain{remoteSlot, sliceRange.end()}.data())
+                                                                       : std::nullopt;
+
+                    write(ep, localGrain.sub(offset, size), remoteGrain.sub(offset, size), destAddr, immData, isLastPlane, endsTransfer, localIndex);
+                }
             }
+        }
+        catch (Exception const& e)
+        {
+            // A full send queue costs this target the grain, not the caller the call: the other targets of the initiator still get it.
+            if (!isQueueFull(e))
+            {
+                throw;
+            }
+            _window.abandon();
+            _grainOpen = false;
+            return;
+        }
 
-            auto const localRegion = localGrain.sub(offset, size);
-            auto const remoteRegion = remoteGrain.sub(offset, size);
-
-            auto const isLastPlane = (plane == planeCount - 1);
-            auto const immData = isLastPlane ? std::make_optional(ImmDataGrain{remoteSlot, sliceRange.end()}.data()) : std::nullopt;
-
-            _pending += ep.write(_token, localRegion, remoteRegion, destAddr, immData);
+        if (endsTransfer)
+        {
+            _grainOpen = false;
         }
     }
 
@@ -86,33 +156,39 @@ namespace mxl::lib::fabrics::ofi
 
     void RMAGrainEgressProtocol::processCompletion(Completion::Data const&)
     {
-        if (_pending > 0)
-        {
-            --_pending;
-        }
+        _window.complete(true);
     }
 
     void RMAGrainEgressProtocol::processCompletionError(Completion::Error const&)
     {
-        if (_pending > 0)
-        {
-            --_pending;
-        }
+        _window.complete(false);
     }
 
     bool RMAGrainEgressProtocol::hasPendingWork() const
     {
-        return _pending > 0;
+        return _window.expectsCompletion();
     }
 
     std::size_t RMAGrainEgressProtocol::reset()
     {
-        return std::exchange(_pending, 0);
+        _grainOpen = false;
+        return _window.reset();
     }
 
-    RMAGrainEgressProtocolTemplate::RMAGrainEgressProtocolTemplate(DataLayout::Discrete layout, std::vector<Region> regions)
+    void RMAGrainEgressProtocol::skip()
+    {
+        _window.skip();
+    }
+
+    mxlFabricsTargetStats RMAGrainEgressProtocol::stats() const
+    {
+        return _window.stats();
+    }
+
+    RMAGrainEgressProtocolTemplate::RMAGrainEgressProtocolTemplate(DataLayout::Discrete layout, std::vector<Region> regions, EgressConfig const& config)
         : _layout{layout}
         , _regions{std::move(regions)}
+        , _config{config}
     {}
 
     void RMAGrainEgressProtocolTemplate::registerMemory(std::shared_ptr<Domain> domain)
@@ -126,6 +202,29 @@ namespace mxl::lib::fabrics::ofi
         _localRegions = domain->localRegions();
     }
 
+    EgressWindow RMAGrainEgressProtocolTemplate::window() const noexcept
+    {
+        // A call that is not a full grain takes one write per plane, and a grain takes chunksPerGrain calls.
+        auto const writesPerGrain = std::max<std::size_t>(_config.chunksPerGrain, 1) * std::max<std::size_t>(_layout.activePlaneCount(), 1);
+        auto grains = std::clamp<std::size_t>(_config.grainsInFlight, 1, MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT);
+        // The send queue has to hold every write in flight, or the provider refuses work the window allowed.
+        if ((_config.sendQueueDepth > 0) && ((grains * writesPerGrain) > _config.sendQueueDepth))
+        {
+            grains = std::max<std::size_t>(_config.sendQueueDepth / writesPerGrain, 1);
+        }
+        auto writes = grains * writesPerGrain;
+        if (_config.sendQueueDepth > 0)
+        {
+            writes = std::min(writes, _config.sendQueueDepth);
+        }
+        return EgressWindow{grains, writes};
+    }
+
+    std::size_t RMAGrainEgressProtocolTemplate::maxWritesInFlight() const noexcept
+    {
+        return window().maxWrites();
+    }
+
     std::unique_ptr<EgressProtocol> RMAGrainEgressProtocolTemplate::createInstance(Completion::Token token, TargetInfo remoteInfo)
     {
         if (!_localRegions)
@@ -135,12 +234,13 @@ namespace mxl::lib::fabrics::ofi
 
         struct MakeUniqueEnabler : RMAGrainEgressProtocol
         {
-            MakeUniqueEnabler(Completion::Token token, TargetInfo info, DataLayout::Discrete layout, std::vector<LocalRegion> localRegion)
-                : RMAGrainEgressProtocol{token, std::move(info), layout, std::move(localRegion)}
+            MakeUniqueEnabler(Completion::Token token, TargetInfo info, DataLayout::Discrete layout, std::vector<LocalRegion> localRegion,
+                EgressConfig const& config, EgressWindow window)
+                : RMAGrainEgressProtocol{token, std::move(info), layout, std::move(localRegion), config, window}
             {}
         };
 
-        return std::make_unique<MakeUniqueEnabler>(token, std::move(remoteInfo), _layout, *_localRegions);
+        return std::make_unique<MakeUniqueEnabler>(token, std::move(remoteInfo), _layout, *_localRegions, _config, window());
     }
 
     RMASampleEgressProtocol::RMASampleEgressProtocol(Completion::Token token, TargetInfo info, DataLayout::Continuous layout, LocalRegion localRegion,
@@ -150,6 +250,8 @@ namespace mxl::lib::fabrics::ofi
         , _layout{layout}
         , _localRegion{localRegion}
         , _staging(stagingSize(_remoteInfo, bounceBufferEntryCount))
+        , _window{std::min<std::size_t>(bounceBufferEntryCount, MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT),
+              std::min<std::size_t>(bounceBufferEntryCount, MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT)}
         , _bounceBufferEntryCount{bounceBufferEntryCount}
     {}
 
@@ -194,22 +296,6 @@ namespace mxl::lib::fabrics::ofi
             throw Exception::invalidArgument("Count must be greater than 0 and at most the ring length {}, got {}.", _layout.bufferLength, count);
         }
 
-        // An entry is rewritten only once the write that last sent it has completed. With as many writes in flight as there are entries, the next
-        // one would overwrite a staging entry the provider may still be reading, so this target misses the transfer. Only this target: failing
-        // the call would have the caller retry it for every target of the flow, and a peer that stopped completing -- one that died -- would
-        // hold back all of them until its writes time out.
-        if (_pending >= _bounceBufferEntryCount)
-        {
-            if (!_saturated)
-            {
-                MXL_WARN("All {} bounce buffer entries of a target are in flight, skipping its transfers until one completes.",
-                    _bounceBufferEntryCount);
-                _saturated = true;
-            }
-            return;
-        }
-        _saturated = false;
-
         auto const entrySize = _remoteInfo.bounceBufferInfo->entrySize;
         auto const entrySizeRequired = (_layout.sampleSize * _layout.channelCount * count) + sizeof(AudioEntryHeader);
         if (entrySizeRequired > entrySize)
@@ -219,6 +305,21 @@ namespace mxl::lib::fabrics::ofi
                 entrySize,
                 entrySizeRequired);
         }
+
+        // An entry is rewritten only once the write that last sent it has completed, and every write consumes a receive at the target. The
+        // window holds no more transfers than there are entries, nor more than half the receives the target keeps posted. A transfer that
+        // does not fit costs this target the batch, not the caller the call: failing it would have the caller retry it for every target of
+        // the flow, and a peer that stopped completing would hold back all of them.
+        if (!_window.open())
+        {
+            if (!_saturated)
+            {
+                MXL_WARN("{} transfers to a target are in flight, skipping its transfers until one completes.", _window.maxTransfers());
+                _saturated = true;
+            }
+            return;
+        }
+        _saturated = false;
 
         // One write per transfer, from a staging copy of the entry. The target reads the header when the write carrying the immediate data
         // completes, and a provider without write-after-write ordering -- EFA -- delivers the writes of a scatter-gather list split over several
@@ -231,36 +332,53 @@ namespace mxl::lib::fabrics::ofi
 
         auto const remoteRegion = _remoteInfo.remoteRegions[_bounceBufferEntryIndex % _remoteInfo.remoteRegions.size()];
 
-        _pending += ep.write(
-            _token, _stagingRegion->sub(offset, entrySizeRequired), remoteRegion.sub(0, entrySizeRequired), destAddr, _bounceBufferEntryIndex);
+        try
+        {
+            static_cast<void>(ep.write(
+                _token, _stagingRegion->sub(offset, entrySizeRequired), remoteRegion.sub(0, entrySizeRequired), destAddr, _bounceBufferEntryIndex));
+        }
+        catch (Exception const& e)
+        {
+            if (!isQueueFull(e))
+            {
+                throw;
+            }
+            _window.abandon();
+            return;
+        }
+        _window.wrote(true, true, headIndex, entrySizeRequired - sizeof(AudioEntryHeader));
 
         _bounceBufferEntryIndex = (_bounceBufferEntryIndex + 1) % _bounceBufferEntryCount;
     }
 
     void RMASampleEgressProtocol::processCompletion(Completion::Data const&)
     {
-        if (_pending > 0)
-        {
-            --_pending;
-        }
+        _window.complete(true);
     }
 
     void RMASampleEgressProtocol::processCompletionError(Completion::Error const&)
     {
-        if (_pending > 0)
-        {
-            --_pending;
-        }
+        _window.complete(false);
     }
 
     bool RMASampleEgressProtocol::hasPendingWork() const
     {
-        return _pending > 0;
+        return _window.expectsCompletion();
     }
 
     std::size_t RMASampleEgressProtocol::reset()
     {
-        return std::exchange(_pending, 0);
+        return _window.reset();
+    }
+
+    void RMASampleEgressProtocol::skip()
+    {
+        _window.skip();
+    }
+
+    mxlFabricsTargetStats RMASampleEgressProtocol::stats() const
+    {
+        return _window.stats();
     }
 
     void RMASampleEgressProtocol::copySamples(DataLayout::Continuous const& layout, std::uint64_t headIndex, std::size_t count,
@@ -290,10 +408,16 @@ namespace mxl::lib::fabrics::ofi
         }
     }
 
-    RMASampleEgressProtocolTemplate::RMASampleEgressProtocolTemplate(DataLayout::Continuous layout, Region region)
+    RMASampleEgressProtocolTemplate::RMASampleEgressProtocolTemplate(DataLayout::Continuous layout, Region region, EgressConfig const&)
         : _layout{layout}
         , _region{region}
     {}
+
+    std::size_t RMASampleEgressProtocolTemplate::maxWritesInFlight() const noexcept
+    {
+        // One write per transfer, and the bounce buffer of a target may allow fewer.
+        return MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT;
+    }
 
     void RMASampleEgressProtocolTemplate::registerMemory(std::shared_ptr<Domain> domain)
     {

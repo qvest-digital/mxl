@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <mxl-internal/FlowReader.hpp>
 #include <mxl-internal/Instance.hpp>
@@ -65,6 +66,51 @@ namespace mxl::lib::fabrics::ofi
                 throw Exception::invalidArgument("cqDepth must be greater or equal to 1.");
             }
             return static_cast<std::size_t>(depth);
+        }
+
+        /// Read an optional whole number from the setup options JSON, checked against [minimum, maximum].
+        std::optional<std::size_t> parseCountOption(char const* options, char const* name, std::size_t minimum, std::size_t maximum)
+        {
+            if ((options == nullptr) || (options[0] == '\0'))
+            {
+                return std::nullopt;
+            }
+
+            auto value = picojson::value{};
+            auto const err = picojson::parse(value, options);
+            if (!err.empty() || !value.is<picojson::object>())
+            {
+                throw Exception::invalidArgument("Invalid JSON setup options: {}", err.empty() ? std::string{"expected an object"} : err);
+            }
+
+            auto const& root = value.get<picojson::object>();
+            auto const it = root.find(name);
+            if (it == root.end())
+            {
+                return std::nullopt;
+            }
+            if (!it->second.is<double>())
+            {
+                throw Exception::invalidArgument("{} must be a number.", name);
+            }
+            auto const count = it->second.get<double>();
+            if ((count < static_cast<double>(minimum)) || (count > static_cast<double>(maximum)))
+            {
+                throw Exception::invalidArgument("{} must be between {} and {}.", name, minimum, maximum);
+            }
+            return static_cast<std::size_t>(count);
+        }
+
+        /// Parse the optional initiator setup options JSON. See mxlFabricsInitiatorSetup() for the recognized fields.
+        InitiatorSetupOptions parseInitiatorOptions(char const* options)
+        {
+            constexpr auto unbounded = std::numeric_limits<std::uint32_t>::max();
+            auto result = InitiatorSetupOptions{.cqDepth = parseCqDepthOption(options)};
+            result.grainsInFlight = parseCountOption(options, "grainsInFlight", 1, MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT)
+                                        .value_or(InitiatorSetupOptions::DefaultGrainsInFlight);
+            result.chunksPerGrain = parseCountOption(options, "chunksPerGrain", 1, unbounded).value_or(1);
+            result.maxTargets = parseCountOption(options, "maxTargets", 1, unbounded).value_or(InitiatorSetupOptions::DefaultMaxTargets);
+            return result;
         }
 
         template<typename F>
@@ -424,7 +470,7 @@ mxlStatus mxlFabricsInitiatorSetup(mxlFabricsInitiator in_initiator, mxlFabricsI
     return ofi::try_run(
         [&]()
         {
-            auto const setupOptions = ofi::InitiatorSetupOptions{.cqDepth = ofi::parseCqDepthOption(options)};
+            auto const setupOptions = ofi::parseInitiatorOptions(options);
             ofi::InitiatorWrapper::fromAPI(in_initiator)->setup(*in_config, setupOptions);
 
             return MXL_STATUS_OK;
@@ -492,6 +538,30 @@ mxlStatus mxlFabricsInitiatorGetTargetState(mxlFabricsInitiator in_initiator, mx
             return MXL_STATUS_OK;
         },
         "Failed to get the state of a target");
+}
+
+extern "C" MXL_EXPORT
+mxlStatus mxlFabricsInitiatorGetTargetStats(mxlFabricsInitiator in_initiator, mxlFabricsTargetInfo in_targetInfo, mxlFabricsTargetStats* out_stats)
+{
+    if ((in_initiator == nullptr) || (in_targetInfo == nullptr) || (out_stats == nullptr))
+    {
+        return MXL_ERR_INVALID_ARG;
+    }
+
+    return ofi::try_run(
+        [&]()
+        {
+            auto targetInfo = ofi::TargetInfo::fromAPI(in_targetInfo);
+            auto const stats = ofi::InitiatorWrapper::fromAPI(in_initiator)->targetStats(*targetInfo);
+            if (!stats)
+            {
+                return MXL_ERR_NOT_FOUND;
+            }
+            *out_stats = *stats;
+
+            return MXL_STATUS_OK;
+        },
+        "Failed to get the counters of a target");
 }
 
 extern "C" MXL_EXPORT

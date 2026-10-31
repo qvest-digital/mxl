@@ -283,9 +283,19 @@ extern "C"
      * \param in_config The initiator configuration. This will be used to create an endpoint and register a memory region. The memory region
      * corresponds to the one that will be shared with targets.
      * \param in_options An optional json-formatted string with options. May be NULL or empty. Recognized fields:
-     *  - "cqDepth" (number >= 1): the depth of the initiator's completion queue. The queue receives one completion per posted
-     *    write, so increase this when many writes are in flight at once (many targets, many slices per grain). When omitted,
-     *    an implementation default is used.
+     *  - "cqDepth" (number >= 1): the depth of the initiator's completion queue. When omitted, a connection-oriented initiator sizes
+     *    it for "maxTargets" targets with every write they may have in flight, because a connection that fails reports every write it
+     *    holds there.
+     *  - "grainsInFlight" (number from 1 to MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT, default 8): how many grains one target may have in
+     *    flight. A grain offered to a target that already has this many in flight is skipped for that target and counted in
+     *    mxlFabricsTargetStats.transfersSkipped; the other targets still get it. Sample batches use MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT,
+     *    or fewer when the target's bounce buffer has fewer entries.
+     *  - "chunksPerGrain" (number >= 1, default 1): how many calls to mxlFabricsInitiatorTransferGrain() send one grain. With more than
+     *    one, only the call whose end slice is the last slice of the grain reports a completion and carries immediate data, so the
+     *    target sees the grain once, when all of it has arrived. With 1, every call reports a completion and carries immediate data,
+     *    so a target can read a grain slice range by slice range.
+     *  - "maxTargets" (number >= 1, default 16): how many targets a connection-oriented initiator holds at once, counting targets that
+     *    are still shutting down. mxlFabricsInitiatorAddTarget() fails with MXL_ERR_INVALID_STATE beyond it.
      * \return The result code. \see mxlStatus
      */
     MXL_EXPORT
@@ -336,6 +346,44 @@ extern "C"
     MXL_EXPORT
     mxlStatus mxlFabricsInitiatorGetTargetState(mxlFabricsInitiator in_initiator, mxlFabricsTargetInfo in_targetInfo,
         mxlFabricsTargetState* out_state);
+
+    /** Upper bound of transfers one target may have in flight. A target keeps twice as many receives posted, so a transfer carrying
+     * immediate data always finds one. */
+#define MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT 16
+
+    /** The value of mxlFabricsTargetStats.lastCompletedIndex before any transfer to the target has completed. */
+#define MXL_FABRICS_NO_INDEX UINT64_MAX
+
+    /**
+     * Counters of what an initiator did with the transfers it was asked to send to one target. A transfer is one grain or one batch of
+     * samples, whatever number of writes it takes. Counters start at zero when the target is added and are kept across reconnections.
+     * transfersPosted always equals transfersCompleted + transfersFailed + transfersInFlight.
+     */
+    typedef struct mxlFabricsTargetStats_t
+    {
+        uint64_t transfersPosted;    /**< Transfers handed to the provider for this target. */
+        uint64_t transfersCompleted; /**< Posted transfers the provider reported as delivered. */
+        uint64_t transfersFailed;    /**< Posted transfers that completed with an error or were lost with their connection. */
+        uint64_t transfersSkipped;   /**< Transfers not sent to this target: too many in flight, the provider queue was full, or the
+                                          target was not connected. */
+        uint64_t transfersInFlight;  /**< Posted transfers not yet reported. */
+        uint64_t writesInFlight;     /**< Writes the provider holds for this target, including writes that report no completion. */
+        uint64_t bytesCompleted;     /**< Payload bytes of the writes the provider reported as delivered. */
+        uint64_t lastCompletedIndex; /**< Grain index, or sample head index, of the last transfer reported as delivered, or
+                                          MXL_FABRICS_NO_INDEX. */
+    } mxlFabricsTargetStats;
+
+    /**
+     * Get the transfer counters of a target added to an initiator. This function is always non-blocking and makes no progress of its own,
+     * so completions are counted once a call to mxlFabricsInitiatorMakeProgress*() has read them.
+     * \param in_initiator A valid fabrics initiator
+     * \param in_targetInfo The target information the target was added with.
+     * \param out_stats The counters of the target. Unchanged unless the function returns MXL_STATUS_OK.
+     * \return MXL_STATUS_OK, MXL_ERR_NOT_FOUND if the initiator holds no such target, or another result code. \see mxlStatus
+     */
+    MXL_EXPORT
+    mxlStatus mxlFabricsInitiatorGetTargetStats(mxlFabricsInitiator in_initiator, mxlFabricsTargetInfo in_targetInfo,
+        mxlFabricsTargetStats* out_stats);
 
     /**
      * Enqueue a transfer operation to all added targets. This function is always non-blocking. The transfer operation might be started right

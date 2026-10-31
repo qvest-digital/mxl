@@ -7,6 +7,7 @@
 #include <rdma/fabric.h>
 #include "AudioBounceBuffer.hpp"
 #include "DataLayout.hpp"
+#include "EgressWindow.hpp"
 #include "Endpoint.hpp"
 #include "Protocol.hpp"
 #include "RegisteredRegion.hpp"
@@ -49,17 +50,37 @@ namespace mxl::lib::fabrics::ofi
          */
         virtual std::size_t reset() final;
 
+        /** \copydoc EgressProtocol::skip()
+         */
+        virtual void skip() final;
+
+        /** \copydoc EgressProtocol::stats()
+         */
+        [[nodiscard]]
+        virtual mxlFabricsTargetStats stats() const final;
+
     private:
         friend class RMAGrainEgressProtocolTemplate;
 
-        RMAGrainEgressProtocol(Completion::Token token, TargetInfo info, DataLayout::Discrete dataLayout, std::vector<LocalRegion> _localRegions);
+        RMAGrainEgressProtocol(Completion::Token token, TargetInfo info, DataLayout::Discrete dataLayout, std::vector<LocalRegion> _localRegions,
+            EgressConfig const& config, EgressWindow window);
+
+        /** \brief Hand one write to the provider and account for it.
+         * \param last The write is the last one of this call.
+         * \param endsTransfer This call ends the transfer of the grain.
+         */
+        void write(Endpoint const& ep, LocalRegion const& local, RemoteRegion const& remote, ::fi_addr_t destAddr,
+            std::optional<std::uint32_t> immData, bool last, bool endsTransfer, std::uint64_t index);
 
     private:
         Completion::Token _token;
         TargetInfo _remoteInfo;
         DataLayout::Discrete _layout;
         std::vector<LocalRegion> _localRegions;
-        std::size_t _pending = 0;
+        EgressConfig _config;
+        EgressWindow _window;
+        std::optional<std::uint64_t> _grain{}; /**< Index of the grain whose chunks are being sent. */
+        bool _grainOpen{false};                /**< The window took that grain and its last chunk has not been sent yet. */
     };
 
     /** \brief Template for creating an Egress protocol for RMA writer endpoint to handle transferring grains to remote targets using remote write
@@ -68,14 +89,23 @@ namespace mxl::lib::fabrics::ofi
     class RMAGrainEgressProtocolTemplate final : public EgressProtocolTemplate
     {
     public:
-        RMAGrainEgressProtocolTemplate(DataLayout::Discrete layout, std::vector<Region> regions);
+        RMAGrainEgressProtocolTemplate(DataLayout::Discrete layout, std::vector<Region> regions, EgressConfig const& config);
 
         virtual void registerMemory(std::shared_ptr<Domain> domain) override;
         virtual std::unique_ptr<EgressProtocol> createInstance(Completion::Token, TargetInfo remoteInfo) override;
+        [[nodiscard]]
+        virtual std::size_t maxWritesInFlight() const noexcept override;
+
+    private:
+        /** \brief The window one target gets: grains in flight, and the writes they take at most.
+         */
+        [[nodiscard]]
+        EgressWindow window() const noexcept;
 
     private:
         DataLayout::Discrete _layout;
         std::vector<Region> _regions;
+        EgressConfig _config;
         std::optional<std::vector<LocalRegion>> _localRegions{};
     };
 
@@ -117,6 +147,15 @@ namespace mxl::lib::fabrics::ofi
          */
         virtual std::size_t reset() final;
 
+        /** \copydoc EgressProtocol::skip()
+         */
+        virtual void skip() final;
+
+        /** \copydoc EgressProtocol::stats()
+         */
+        [[nodiscard]]
+        virtual mxlFabricsTargetStats stats() const final;
+
     private:
         friend class RMASampleEgressProtocolTemplate;
 
@@ -148,8 +187,9 @@ namespace mxl::lib::fabrics::ofi
                                                single write. */
         std::optional<RegisteredRegion> _stagingRegistration; /**< Registration of _staging, owned here so it goes with the target. */
         std::optional<LocalRegion> _stagingRegion;            /**< The registered region backing _staging. */
-        bool _saturated{false};                               /**< Every staging entry was in flight at the last transfer, which was skipped. */
-        std::size_t _pending = 0;
+        bool _saturated{false};                               /**< The window was full at the last transfer, which was skipped. */
+        EgressWindow _window;                                 /**< At most one transfer per staging entry, and no more than
+                                                                 MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT. */
         std::uint32_t _bounceBufferEntryIndex{0};             /**< The index of the bounce buffer entry to use for the next transfer. */
         std::size_t _bounceBufferEntryCount; /**< The total number of bounce buffer entries. Used to wrap around the bounce buffer entry index. */
     };
@@ -160,10 +200,12 @@ namespace mxl::lib::fabrics::ofi
     class RMASampleEgressProtocolTemplate final : public EgressProtocolTemplate
     {
     public:
-        RMASampleEgressProtocolTemplate(DataLayout::Continuous layout, Region region);
+        RMASampleEgressProtocolTemplate(DataLayout::Continuous layout, Region region, EgressConfig const& config);
 
         virtual void registerMemory(std::shared_ptr<Domain> domain) override;
         virtual std::unique_ptr<EgressProtocol> createInstance(Completion::Token, TargetInfo remoteInfo) override;
+        [[nodiscard]]
+        virtual std::size_t maxWritesInFlight() const noexcept override;
 
     private:
         DataLayout::Continuous _layout;

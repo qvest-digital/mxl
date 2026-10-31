@@ -29,6 +29,7 @@ target_sources(mxl-fabrics-ofi-tests
             test_ProviderConfig.cpp
             test_Region.cpp
             test_DataLayout.cpp
+            test_EgressWindow.cpp
             test_SliceRange.cpp
     )
 

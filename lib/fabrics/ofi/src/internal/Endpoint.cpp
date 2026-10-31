@@ -320,11 +320,12 @@ namespace mxl::lib::fabrics::ofi
     }
 
     void Endpoint::writeImpl(Completion::Token token, ::iovec const* msgIov, std::size_t iovCount, void** desc, ::fi_rma_iov const* rmaIov,
-        ::fi_addr_t destAddr, std::optional<std::uint32_t> immData) const
+        ::fi_addr_t destAddr, std::optional<std::uint32_t> immData, bool reportCompletion) const
     {
         std::uint64_t data = immData.value_or(0);
         std::uint64_t flags = FI_DELIVERY_COMPLETE;
         flags |= immData.has_value() ? FI_REMOTE_CQ_DATA : 0;
+        flags |= reportCompletion ? FI_COMPLETION : 0;
 
         ::fi_msg_rma msg = {
             .msg_iov = msgIov,
@@ -341,14 +342,14 @@ namespace mxl::lib::fabrics::ofi
     }
 
     std::size_t Endpoint::write(Completion::Token token, LocalRegion const& local, RemoteRegion const& remote, ::fi_addr_t destAddr,
-        std::optional<std::uint32_t> immData) const
+        std::optional<std::uint32_t> immData, bool reportCompletion) const
     {
         std::vector<void*> descs{local.desc};
 
         auto msgIov = local.toIovec();
         auto rmaIov = remote.toRmaIov();
 
-        writeImpl(token, &msgIov, 1, descs.data(), &rmaIov, destAddr, immData);
+        writeImpl(token, &msgIov, 1, descs.data(), &rmaIov, destAddr, immData, reportCompletion);
 
         return 1;
     }

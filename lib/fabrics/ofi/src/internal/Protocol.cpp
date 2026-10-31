@@ -30,11 +30,11 @@ namespace mxl::lib::fabrics::ofi
         }
     }
 
-    std::unique_ptr<EgressProtocolTemplate> selectEgressProtocol(DataLayout const& layout, std::vector<Region> regions)
+    std::unique_ptr<EgressProtocolTemplate> selectEgressProtocol(DataLayout const& layout, std::vector<Region> regions, EgressConfig const& config)
     {
         if (layout.isDiscrete())
         {
-            return std::make_unique<RMAGrainEgressProtocolTemplate>(layout.asDiscrete(), std::move(regions));
+            return std::make_unique<RMAGrainEgressProtocolTemplate>(layout.asDiscrete(), std::move(regions), config);
         }
         else if (layout.isContinuous())
         {
@@ -42,7 +42,7 @@ namespace mxl::lib::fabrics::ofi
             {
                 throw Exception::invalidArgument("Expected exactly 1 region for sample protocol.");
             }
-            return std::make_unique<RMASampleEgressProtocolTemplate>(layout.asContinuous(), regions.front());
+            return std::make_unique<RMASampleEgressProtocolTemplate>(layout.asContinuous(), regions.front(), config);
         }
         else
         {
