@@ -289,12 +289,16 @@ extern "C"
      *  - "grainsInFlight" (number from 1 to MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT, default 8): how many grains one target may have in
      *    flight. A grain offered to a target that already has this many in flight, or whose send queue is full, is skipped for that
      *    target and counted in mxlFabricsTargetStats.transfersSkipped. The other targets still get it, and
-     *    mxlFabricsInitiatorTransferGrain() then returns MXL_ERR_NOT_READY: calling it again for the same grain sends it again to every
-     *    target. Sample batches use MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT, or fewer when the target's bounce buffer has fewer entries;
-     *    a batch that does not fit is skipped for that target without an error, as before.
+     *    mxlFabricsInitiatorTransferGrain() then returns MXL_ERR_NOT_READY. That answer no longer means that nothing was sent: calling
+     *    the function again for the same grain sends it a second time to every target that took it the first time. A caller that
+     *    wants each grain sent once moves on to the next grain and reads the per-target counters to see which targets skipped it.
+     *    Sample batches use MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT, or fewer when the target's bounce buffer has fewer entries; a batch
+     *    that does not fit is skipped for that target without an error, as before.
      *  - "chunksPerGrain" (number >= 1, default 1): how many calls to mxlFabricsInitiatorTransferGrain() send one grain. With more than
      *    one, only the call whose end slice is the last slice of the grain reports a completion and carries immediate data, so the
-     *    target sees the grain once, when all of it has arrived. With 1, every call reports a completion and carries immediate data,
+     *    target sees the grain once, when all of it has arrived. A grain is taken by a target only from its first chunk (start slice
+     *    0), when room for all its chunks is reserved; a target that sees the later chunks of a grain without its first, such as one
+     *    that connected part way through it, skips the whole grain. With 1, every call reports a completion and carries immediate data,
      *    so a target can read a grain slice range by slice range.
      *  - "maxTargets" (number >= 1, default 16): how many targets a connection-oriented initiator holds at once, counting targets that
      *    are still shutting down. mxlFabricsInitiatorAddTarget() fails with MXL_ERR_INVALID_STATE beyond it.
@@ -370,7 +374,13 @@ extern "C"
                                           target was not connected. */
         uint64_t transfersInFlight;  /**< Posted transfers not yet reported. */
         uint64_t writesInFlight;     /**< Writes the provider holds for this target, including writes that report no completion. */
-        uint64_t bytesCompleted;     /**< Payload bytes of the writes the provider reported as delivered. */
+        uint64_t bytesCompleted;     /**< Payload bytes of the writes the provider reported as delivered, including the chunks of a grain
+                                          that was given up part way: they went over the wire all the same. */
+        uint64_t transfersTorn;      /**< Completed grains whose source slot the producer had rewritten by the time the completion was read:
+                                          the source head had reached the grain index plus the ring depth. An upper bound, because the
+                                          provider read the payload earlier than the completion was read, and a grain is counted whether
+                                          or not the read raced the rewrite. Batches of samples are copied at post time and never counted. */
+        uint64_t accountingErrors;   /**< Completions that did not match what was recorded in flight. Always 0 unless there is a bug. */
         uint64_t lastCompletedIndex; /**< Grain index, or sample head index, of the last transfer reported as delivered, or
                                           MXL_FABRICS_NO_INDEX. */
     } mxlFabricsTargetStats;

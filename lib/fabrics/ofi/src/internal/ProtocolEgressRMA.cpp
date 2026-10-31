@@ -55,9 +55,12 @@ namespace mxl::lib::fabrics::ofi
         auto const chunked = _config.chunksPerGrain > 1;
         auto const endsGrain = sliceRange.end() == _layout.totalSlices;
 
-        // Sent in chunks, a grain is one transfer that its first chunk opens and its last chunk ends. Otherwise every call is a transfer of
-        // its own. A grain whose last chunk never came is given up when the next one starts; its writes are settled by a later completion.
-        if (!chunked || (sliceRange.start() == 0) || (_grain != localIndex))
+        // Sent in chunks, a grain is one transfer that its first chunk opens and its last chunk ends; otherwise every call is a transfer of
+        // its own. A grain whose last chunk never came is given up when the next one starts, and its writes are settled by a later
+        // completion. A chunk of a grain this target never opened -- the target connected part way through it -- skips the whole grain:
+        // opening it there would have the last chunk's immediate data commit slices that were never sent.
+        auto const writesPerCall = (sliceRange.start() == 0) && endsGrain ? std::size_t{1} : _layout.activePlaneCount();
+        if (!chunked || (sliceRange.start() == 0))
         {
             if (_grainOpen)
             {
@@ -70,6 +73,25 @@ namespace mxl::lib::fabrics::ofi
                 throw Exception::make(
                     MXL_ERR_NOT_READY, "{} grains to a target are in flight, skipping grain {}.", _window.maxTransfers(), localIndex);
             }
+            // The room for all of a chunked grain is taken up front, so a grain that starts always has room to finish.
+            auto const reserve = chunked ? (_config.chunksPerGrain * _layout.activePlaneCount()) : writesPerCall;
+            if (!_window.hasRoomFor(reserve))
+            {
+                _window.abandon();
+                _grainOpen = false;
+                throw Exception::make(MXL_ERR_NOT_READY, "{} writes to a target are in flight, skipping grain {}.", _window.maxWrites(), localIndex);
+            }
+        }
+        else if (_grain != localIndex)
+        {
+            if (_grainOpen)
+            {
+                _window.abandon();
+            }
+            _grain = localIndex;
+            _grainOpen = false;
+            _window.skip();
+            return;
         }
         if (!_grainOpen)
         {
@@ -81,13 +103,7 @@ namespace mxl::lib::fabrics::ofi
         // target then sees the grain once, after all of it has arrived, and needs one receive per grain.
         auto const endsTransfer = !chunked || endsGrain;
         auto const fullGrain = (sliceRange.start() == 0) && endsGrain;
-        auto const writes = fullGrain ? std::size_t{1} : _layout.activePlaneCount();
-        if (!_window.hasRoomFor(writes))
-        {
-            _window.abandon();
-            _grainOpen = false;
-            throw Exception::make(MXL_ERR_NOT_READY, "{} writes to a target are in flight, skipping grain {}.", _window.maxWrites(), localIndex);
-        }
+        auto const writes = writesPerCall;
 
         auto const localGrain = _localRegions[localIndex % _localRegions.size()];
         auto const remoteGrain = _remoteInfo.remoteRegions[remoteIndex % _remoteInfo.remoteRegions.size()];
@@ -162,12 +178,18 @@ namespace mxl::lib::fabrics::ofi
 
     void RMAGrainEgressProtocol::processCompletion(Completion::Data const&)
     {
-        _window.complete(true);
+        auto const index = _window.complete(true);
+        // The provider reads a grain's payload from the source ring while it transmits, retransmissions included. A grain completing after
+        // the producer reached its slot again may have gone out with newer content.
+        if (index && _config.sourceHead && (_config.sourceHead() >= (*index + _localRegions.size())))
+        {
+            _window.torn();
+        }
     }
 
     void RMAGrainEgressProtocol::processCompletionError(Completion::Error const&)
     {
-        _window.complete(false);
+        static_cast<void>(_window.complete(false));
     }
 
     bool RMAGrainEgressProtocol::hasPendingWork() const
@@ -359,12 +381,12 @@ namespace mxl::lib::fabrics::ofi
 
     void RMASampleEgressProtocol::processCompletion(Completion::Data const&)
     {
-        _window.complete(true);
+        static_cast<void>(_window.complete(true));
     }
 
     void RMASampleEgressProtocol::processCompletionError(Completion::Error const&)
     {
-        _window.complete(false);
+        static_cast<void>(_window.complete(false));
     }
 
     bool RMASampleEgressProtocol::hasPendingWork() const

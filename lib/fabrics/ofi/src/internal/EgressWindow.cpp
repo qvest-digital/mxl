@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "EgressWindow.hpp"
+#include <cassert>
 #include <algorithm>
 
 namespace mxl::lib::fabrics::ofi
@@ -63,32 +64,46 @@ namespace mxl::lib::fabrics::ofi
         ++_skipped;
     }
 
-    void EgressWindow::complete(bool success) noexcept
+    std::optional<std::uint64_t> EgressWindow::complete(bool success) noexcept
     {
-        // A completion with nothing expected belongs to a connection this window was reset for.
+        // Every completion that reaches the window answers a write it recorded: an endpoint's completions after its connection was reset
+        // are counted by the endpoint, not here. One with nothing expected, or one settling more than is in flight, is a bookkeeping error.
         if (_segments.empty())
         {
-            return;
+            assert(!"completion with nothing in flight");
+            ++_accountingErrors;
+            return std::nullopt;
         }
 
         auto const segment = _segments.front();
         _segments.pop_front();
 
+        if ((segment.transfers > _transfersInFlight) || (segment.writes > _writesInFlight))
+        {
+            assert(!"completion settles more than is in flight");
+            ++_accountingErrors;
+        }
         _transfersInFlight -= std::min(_transfersInFlight, segment.transfers);
         _writesInFlight -= std::min(_writesInFlight, segment.writes);
-        if (success)
-        {
-            _completed += segment.transfers;
-            _bytesCompleted += segment.bytes;
-            if (segment.transfers > 0)
-            {
-                _lastCompletedIndex = segment.index;
-            }
-        }
-        else
+        if (!success)
         {
             _failed += segment.transfers;
+            return std::nullopt;
         }
+
+        _completed += segment.transfers;
+        _bytesCompleted += segment.bytes;
+        if (segment.transfers == 0)
+        {
+            return std::nullopt;
+        }
+        _lastCompletedIndex = segment.index;
+        return segment.index;
+    }
+
+    void EgressWindow::torn() noexcept
+    {
+        ++_torn;
     }
 
     std::size_t EgressWindow::reset() noexcept
@@ -134,6 +149,8 @@ namespace mxl::lib::fabrics::ofi
             .transfersInFlight = _transfersInFlight,
             .writesInFlight = _writesInFlight,
             .bytesCompleted = _bytesCompleted,
+            .transfersTorn = _torn,
+            .accountingErrors = _accountingErrors,
             .lastCompletedIndex = _lastCompletedIndex,
         };
     }

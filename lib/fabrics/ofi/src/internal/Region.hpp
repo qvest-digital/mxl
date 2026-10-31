@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <variant>
 #include <vector>
 #include <uuid.h>
@@ -243,6 +244,11 @@ namespace mxl::lib::fabrics::ofi
      */
     [[nodiscard]]
     MxlRegions mxlFabricsRegionsFromMutableFlow(FlowData& flow);
+
+    /** \brief The head index of the flow an initiator reads, for counting torn grains.
+     */
+    [[nodiscard]]
+    std::function<std::uint64_t()> sourceHeadOf(::mxlFlowReader reader);
 
     /** \brief
      */

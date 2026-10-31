@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <mxl/fabrics.h>
 
 namespace mxl::lib::fabrics::ofi
@@ -60,8 +61,13 @@ namespace mxl::lib::fabrics::ofi
 
         /** \brief Account for one reported completion.
          * \param success Whether the write completed without an error.
+         * \return The index of the transfer this completion ended successfully, if it ended one.
          */
-        void complete(bool success) noexcept;
+        std::optional<std::uint64_t> complete(bool success) noexcept;
+
+        /** \brief Count a completed transfer whose source was overwritten before it completed.
+         */
+        void torn() noexcept;
 
         /** \brief Forget everything in flight because the connection carrying it is gone. What was in flight is counted as failed.
          * \return The number of completions that were still expected.
@@ -112,6 +118,8 @@ namespace mxl::lib::fabrics::ofi
         std::uint64_t _failed{0};
         std::uint64_t _skipped{0};
         std::uint64_t _bytesCompleted{0};
+        std::uint64_t _torn{0};
+        std::uint64_t _accountingErrors{0};
         std::uint64_t _lastCompletedIndex{MXL_FABRICS_NO_INDEX};
     };
 }

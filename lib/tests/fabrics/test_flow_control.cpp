@@ -186,6 +186,17 @@ namespace
             return stats;
         }
 
+        /** Commit grain index on the source flow, which moves its head there.
+         */
+        void commitSource(std::uint64_t index)
+        {
+            auto info = mxlGrainInfo{};
+            std::uint8_t* payload = nullptr;
+            REQUIRE(mxlFlowWriterOpenGrain(_writers.front(), index, &info, &payload) == MXL_STATUS_OK);
+            info.validSlices = info.totalSlices;
+            REQUIRE(mxlFlowWriterCommitGrain(_writers.front(), &info) == MXL_STATUS_OK);
+        }
+
         std::vector<mxlFabricsTarget> targets;
         std::vector<mxlFabricsTargetInfo> infos;
         mxlFabricsInitiator initiator{nullptr};
@@ -228,6 +239,7 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC initiato
         REQUIRE(stats.transfersCompleted == 3);
         REQUIRE(stats.transfersInFlight == 0);
         REQUIRE(stats.lastCompletedIndex == 2);
+        REQUIRE(stats.accountingErrors == 0);
     }
 
     // The window opens again once completions were read.
@@ -269,6 +281,66 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: a grain sen
     REQUIRE(stats.transfersPosted == 1);
     REQUIRE(stats.transfersCompleted == 1);
     REQUIRE(stats.lastCompletedIndex == 0);
+}
+
+TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: a target that misses the first chunk of a grain skips the grain",
+    "[fabrics][flow-control]")
+{
+    // The target connects while grain 0 is half sent. Opening the grain on a later chunk would have the last chunk's immediate data mark
+    // the whole grain valid at the target with only its second half written.
+    auto rig = Rig{domain, 1, MXL_FABRICS_PROVIDER_TCP, "127.0.0.1", R"({"chunksPerGrain": 4})"};
+    rig.addAllAndConnect();
+
+    constexpr std::uint16_t chunk = V210_SLICES / 4;
+    for (std::uint16_t start = 2 * chunk; start < V210_SLICES; start += chunk)
+    {
+        REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, 0, start, start + chunk) == MXL_STATUS_OK);
+    }
+    REQUIRE(rig.drain(CONNECT_TIMEOUT));
+    auto const quiet = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (std::chrono::steady_clock::now() < quiet)
+    {
+        REQUIRE(rig.pollTargets() == 0);
+    }
+    auto stats = rig.statsOf(0);
+    REQUIRE(stats.transfersPosted == 0);
+    REQUIRE(stats.transfersSkipped == 1);
+    REQUIRE(stats.writesInFlight == 0);
+
+    // The next grain, sent from its first chunk, goes over whole.
+    for (std::uint16_t start = 0; start < V210_SLICES; start += chunk)
+    {
+        REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, 1, start, start + chunk) == MXL_STATUS_OK);
+    }
+    REQUIRE(rig.drain(CONNECT_TIMEOUT));
+    stats = rig.statsOf(0);
+    REQUIRE(stats.transfersPosted == 1);
+    REQUIRE(stats.transfersCompleted == 1);
+    REQUIRE(stats.lastCompletedIndex == 1);
+}
+
+TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: a grain completing after its source slot was rewritten counts as torn",
+    "[fabrics][flow-control]")
+{
+    auto rig = Rig{domain, 1, MXL_FABRICS_PROVIDER_TCP, "127.0.0.1", nullptr};
+    rig.addAllAndConnect();
+
+    // Far above any ring depth, so the second grain's slot is certain to have been rewritten when it completes.
+    constexpr std::uint64_t head = 1'000'000;
+    constexpr std::uint64_t lap = 100'000;
+
+    rig.commitSource(head);
+    REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, head, 0, V210_SLICES) == MXL_STATUS_OK);
+    REQUIRE(rig.drain(CONNECT_TIMEOUT));
+    REQUIRE(rig.statsOf(0).transfersTorn == 0);
+
+    rig.commitSource(head + 1);
+    REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, head + 1, 0, V210_SLICES) == MXL_STATUS_OK);
+    rig.commitSource(head + 1 + lap);
+    REQUIRE(rig.drain(CONNECT_TIMEOUT));
+    auto const stats = rig.statsOf(0);
+    REQUIRE(stats.transfersCompleted == 2);
+    REQUIRE(stats.transfersTorn == 1);
 }
 
 TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC initiator refuses targets beyond maxTargets", "[fabrics][flow-control]")

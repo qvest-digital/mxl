@@ -376,6 +376,7 @@ namespace mxl::lib::fabrics::ofi
             .chunksPerGrain = options.chunksPerGrain,
             .sendQueueDepth = info.txSize(),
             .selectiveCompletion = true,
+            .sourceHead = sourceHeadOf(config.reader),
         };
         auto proto = selectEgressProtocol(regions.dataLayout(), regions.regions(), egressConfig);
         proto->registerMemory(domain);

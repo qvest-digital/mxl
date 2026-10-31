@@ -208,6 +208,7 @@ namespace mxl::lib::fabrics::ofi
                 .chunksPerGrain = options.chunksPerGrain,
                 .sendQueueDepth = 0,
                 .selectiveCompletion = false,
+                .sourceHead = sourceHeadOf(config.reader),
             });
 
         proto->registerMemory(domain);

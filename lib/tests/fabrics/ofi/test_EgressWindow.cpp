@@ -127,3 +127,35 @@ TEST_CASE("Fabrics: egress window counts what a lost connection held as failed",
     window.complete(true);
     REQUIRE(window.stats().transfersCompleted == 0);
 }
+
+TEST_CASE("Fabrics: egress window reports the transfer a completion ended, and counts torn ones", "[fabrics][flow-control]")
+{
+    auto window = ofi::EgressWindow{4, 8};
+    REQUIRE(window.open());
+    window.wrote(false, false, 5, 100);
+    REQUIRE_FALSE(window.complete(true).has_value());
+    window.wrote(true, true, 5, 100);
+    auto const index = window.complete(true);
+    REQUIRE(index.has_value());
+    REQUIRE(*index == 5);
+
+    REQUIRE(window.open());
+    window.wrote(true, true, 6, 100);
+    REQUIRE_FALSE(window.complete(false).has_value());
+
+    window.torn();
+    auto const stats = window.stats();
+    REQUIRE(stats.transfersTorn == 1);
+    REQUIRE(stats.transfersFailed == 1);
+    REQUIRE(stats.accountingErrors == 0);
+}
+
+#ifdef NDEBUG
+TEST_CASE("Fabrics: egress window counts a completion it has no record of", "[fabrics][flow-control]")
+{
+    auto window = ofi::EgressWindow{4, 8};
+    REQUIRE_FALSE(window.complete(true).has_value());
+    REQUIRE(window.stats().accountingErrors == 1);
+    REQUIRE(window.stats().transfersCompleted == 0);
+}
+#endif

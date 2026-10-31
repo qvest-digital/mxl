@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <rdma/fabric.h>
 #include "DataLayout.hpp"
@@ -69,6 +70,8 @@ namespace mxl::lib::fabrics::ofi
         std::size_t chunksPerGrain{1};   /**< Calls that send one grain. More than one signals and carries immediate data on the last only. */
         std::size_t sendQueueDepth{0};   /**< Writes the provider accepts per endpoint. 0 means no limit is known. */
         bool selectiveCompletion{false}; /**< The endpoint reports a completion only for writes that ask for one. */
+        std::function<std::uint64_t()> sourceHead{}; /**< The head index of the source flow, read when a grain completes to count it as
+                                                        torn. Empty counts nothing. */
     };
 
     /** \brief Interface for transfer operations.

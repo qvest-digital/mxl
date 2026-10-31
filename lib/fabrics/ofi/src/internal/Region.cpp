@@ -10,6 +10,7 @@
 #include <mxl-internal/DiscreteFlowData.hpp>
 #include <mxl-internal/Flow.hpp>
 #include "mxl-internal/ContinuousFlowData.hpp"
+#include "mxl-internal/FlowReader.hpp"
 #include "mxl-internal/Instance.hpp"
 #include "mxl/dataformat.h"
 #include "mxl/fabrics.h"
@@ -105,6 +106,16 @@ namespace mxl::lib::fabrics::ofi
     MxlRegions MxlRegions::forReader(::mxlFlowReader reader)
     {
         return mxlFabricsRegionsFromFlow(mxl::lib::to_FlowReader(reader)->getFlowData());
+    }
+
+    std::function<std::uint64_t()> sourceHeadOf(::mxlFlowReader reader)
+    {
+        // The initiator keeps the reader for as long as it lives, and the runtime info is read from shared memory without a lock.
+        auto const* flowReader = mxl::lib::to_FlowReader(reader);
+        return [flowReader]()
+        {
+            return flowReader->getFlowRuntimeInfo().headIndex;
+        };
     }
 
     MxlRegions MxlRegions::forWriter(::mxlFlowWriter writer)
