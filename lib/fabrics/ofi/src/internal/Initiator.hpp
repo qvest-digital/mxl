@@ -23,6 +23,21 @@ namespace mxl::lib::fabrics::ofi
          * (CompletionQueue::Attributes::DEFAULT_SIZE) is used.
          */
         std::optional<std::size_t> cqDepth;
+
+        /** \brief Grains one target may have in flight. See "grainsInFlight" in mxlFabricsInitiatorSetup().
+         */
+        std::size_t grainsInFlight{DefaultGrainsInFlight};
+
+        /** \brief Calls that send one grain. See "chunksPerGrain" in mxlFabricsInitiatorSetup().
+         */
+        std::size_t chunksPerGrain{1};
+
+        /** \brief Targets a connection-oriented initiator holds at once. See "maxTargets" in mxlFabricsInitiatorSetup().
+         */
+        std::size_t maxTargets{DefaultMaxTargets};
+
+        constexpr static std::size_t DefaultGrainsInFlight = 8;
+        constexpr static std::size_t DefaultMaxTargets = 16;
     };
 
     /** \brief Abstract base class for Initiator implementations.
@@ -65,6 +80,11 @@ namespace mxl::lib::fabrics::ofi
          */
         [[nodiscard]]
         virtual std::optional<mxlFabricsTargetState> targetState(TargetInfo const& targetInfo) const = 0;
+
+        /** \brief The transfer counters of an added target, or nothing if the initiator holds no such target.
+         */
+        [[nodiscard]]
+        virtual std::optional<mxlFabricsTargetStats> targetStats(TargetInfo const& targetInfo) const = 0;
 
         /** \brief Transfer a grain to all targets.
          *
@@ -165,6 +185,11 @@ namespace mxl::lib::fabrics::ofi
          */
         [[nodiscard]]
         std::optional<mxlFabricsTargetState> targetState(TargetInfo const& targetInfo) const;
+
+        /** \copydoc Initiator::targetStats()
+         */
+        [[nodiscard]]
+        std::optional<mxlFabricsTargetStats> targetStats(TargetInfo const& targetInfo) const;
 
         /** \copydoc Initiator::transferGrain()
          */

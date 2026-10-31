@@ -158,9 +158,9 @@ namespace mxl::lib::fabrics::ofi
             overloaded{
                 [&](Idle state) -> State
                 {
-                    // If the target is in the idle state for more than 5 seconds, it will be restarted.
+                    // A fresh endpoint connects at once. One restarted after a failure waits, longer after each consecutive failure.
                     auto idleDuration = std::chrono::steady_clock::now() - state.idleSince;
-                    if (idleDuration < std::chrono::seconds(5))
+                    if (idleDuration < state.delay)
                     {
                         return state;
                     }
@@ -168,9 +168,11 @@ namespace mxl::lib::fabrics::ofi
                     MXL_INFO("Endpoint has been idle for {}ms, activating",
                         std::chrono::duration_cast<std::chrono::milliseconds>(idleDuration).count());
 
-                    // The endpoint in an idle target is always fresh and thus needs to be bound the the queues.
+                    // The endpoint in an idle target is always fresh and thus needs to be bound the the queues. Only the writes that end a
+                    // transfer ask for a completion; the provider still signals every write and flushes every write of a failed connection to
+                    // the queue, which is what it is sized for.
                     state.ep.bind(eq);
-                    state.ep.bind(cq, FI_TRANSMIT);
+                    state.ep.bind(cq, FI_TRANSMIT | FI_SELECTIVE_COMPLETION);
 
                     // Transition into the connecting state
                     auto const faddr = _info.fabricAddress.decode();
@@ -203,6 +205,7 @@ namespace mxl::lib::fabrics::ofi
                     else if (ev.isConnected())
                     {
                         MXL_INFO("Endpoint is now connected");
+                        _reconnectDelay = {};
                         return Connected{.ep = std::move(state.ep)};
                     }
                     else if (ev.isShutdown())
@@ -274,6 +277,10 @@ namespace mxl::lib::fabrics::ofi
         {
             _proto->transferGrain(state->ep, localIndex, remoteIndex, remotePayloadOffset, sliceRange);
         }
+        else if (sliceRange.start() == 0)
+        {
+            _proto->skip();
+        }
     }
 
     void RCInitiatorEndpoint::transferSamples(std::uint64_t headIndex, std::size_t count)
@@ -282,6 +289,15 @@ namespace mxl::lib::fabrics::ofi
         {
             _proto->transferSamples(state->ep, headIndex, count);
         }
+        else
+        {
+            _proto->skip();
+        }
+    }
+
+    mxlFabricsTargetStats RCInitiatorEndpoint::stats() const noexcept
+    {
+        return _proto->stats();
     }
 
     void RCInitiatorEndpoint::handleCompletionData(Completion::Data completion)
@@ -336,7 +352,11 @@ namespace mxl::lib::fabrics::ofi
 
     RCInitiatorEndpoint::Idle RCInitiatorEndpoint::restart(Endpoint const& old)
     {
-        return Idle{.ep = Endpoint::create(old.domain(), old.id(), old.info()), .idleSince = std::chrono::steady_clock::now()};
+        _reconnectDelay = (_reconnectDelay == std::chrono::steady_clock::duration{})
+                            ? std::chrono::steady_clock::duration{MinReconnectDelay}
+                            : std::min<std::chrono::steady_clock::duration>(_reconnectDelay * 2, MaxReconnectDelay);
+        return Idle{
+            .ep = Endpoint::create(old.domain(), old.id(), old.info()), .idleSince = std::chrono::steady_clock::now(), .delay = _reconnectDelay};
     }
 
     std::unique_ptr<RCInitiator> RCInitiator::setup(mxlFabricsInitiatorConfig const& config, FabricInfoView info,
@@ -349,44 +369,57 @@ namespace mxl::lib::fabrics::ofi
         auto domain = Domain::open(fabric);
 
         auto eq = EventQueue::open(fabric);
-        // Size the completion queue to the send queue it serves.
-        //
-        // Every operation is signalled, so a full send queue means that
-        // many completions, and libfabric bounds outstanding sends by the
-        // send-queue depth rather than by the completion queue -- the verbs
-        // provider says as much in a comment where it creates the hardware
-        // queue. Leaving the completion queue at the small default let an
-        // initiator post far more than it could hold. An explicit cqDepth
-        // option still takes precedence.
-        auto cqAttr = CompletionQueue::Attributes::defaults();
-        cqAttr.size = options.cqDepth.value_or(std::max(cqAttr.size, info.txSize()));
-        auto cq = CompletionQueue::open(domain, cqAttr);
 
         auto regions = MxlRegions::forReader(config.reader);
-        auto proto = selectEgressProtocol(regions.dataLayout(), regions.regions());
+        auto const egressConfig = EgressConfig{
+            .grainsInFlight = options.grainsInFlight,
+            .chunksPerGrain = options.chunksPerGrain,
+            .sendQueueDepth = info.txSize(),
+            .selectiveCompletion = true,
+            .sourceHead = sourceHeadOf(config.reader),
+        };
+        auto proto = selectEgressProtocol(regions.dataLayout(), regions.regions(), egressConfig);
         proto->registerMemory(domain);
+
+        // One completion queue serves every endpoint, and every endpoint may hold as many writes as its window allows. The provider signals
+        // each write to the queue whether or not a completion was asked for, and a connection that fails flushes all of them there at once,
+        // so the queue holds the windows of maxTargets endpoints. Sized for a single send queue, it overran as soon as two endpoints filled
+        // theirs. An explicit cqDepth option still takes precedence.
+        auto const maxTargets = std::max<std::size_t>(options.maxTargets, 1);
+        auto cqAttr = CompletionQueue::Attributes::defaults();
+        cqAttr.size = options.cqDepth.value_or(std::max(cqAttr.size, maxTargets * proto->maxWritesInFlight()));
+        auto cq = CompletionQueue::open(domain, cqAttr);
 
         struct MakeUniqueEnabler : RCInitiator
         {
             MakeUniqueEnabler(std::shared_ptr<Domain> domain, std::shared_ptr<CompletionQueue> cq, std::shared_ptr<EventQueue> eq,
-                std::unique_ptr<EgressProtocolTemplate> proto)
-                : RCInitiator(std::move(domain), std::move(cq), std::move(eq), std::move(proto))
+                std::unique_ptr<EgressProtocolTemplate> proto, std::size_t maxTargets)
+                : RCInitiator(std::move(domain), std::move(cq), std::move(eq), std::move(proto), maxTargets)
             {}
         };
 
-        return std::make_unique<MakeUniqueEnabler>(std::move(domain), std::move(cq), std::move(eq), std::move(proto));
+        return std::make_unique<MakeUniqueEnabler>(std::move(domain), std::move(cq), std::move(eq), std::move(proto), maxTargets);
     }
 
     RCInitiator::RCInitiator(std::shared_ptr<Domain> domain, std::shared_ptr<CompletionQueue> cq, std::shared_ptr<EventQueue> eq,
-        std::unique_ptr<EgressProtocolTemplate> proto)
+        std::unique_ptr<EgressProtocolTemplate> proto, std::size_t maxTargets)
         : _domain(std::move(domain))
         , _cq(std::move(cq))
         , _eq(std::move(eq))
         , _proto(std::move(proto))
+        , _maxTargets(maxTargets)
     {}
 
     void RCInitiator::addTarget(TargetInfo const& targetInfo)
     {
+        // The completion queue holds the writes of _maxTargets endpoints. An endpoint that is done holds none; every other one, including
+        // one still shutting down, may.
+        auto const held = std::ranges::count_if(_targets, [](auto const& item) { return !item.second.canEvict(); });
+        if (static_cast<std::size_t>(held) >= _maxTargets)
+        {
+            throw Exception::invalidState("The initiator already holds {} targets, the most its completion queue is sized for.", _maxTargets);
+        }
+
         auto endpoint = Endpoint::create(_domain);
         auto id = endpoint.id();
         auto proto = _proto->createInstance(Endpoint::tokenFromId(id), targetInfo);
@@ -423,19 +456,21 @@ namespace mxl::lib::fabrics::ofi
         return std::nullopt;
     }
 
+    std::optional<mxlFabricsTargetStats> RCInitiator::targetStats(TargetInfo const& targetInfo) const
+    {
+        if (auto const target = liveEndpointFor(_targets, targetInfo.id); target != _targets.end())
+        {
+            return target->second.stats();
+        }
+
+        return std::nullopt;
+    }
+
     void RCInitiator::transferGrain(std::uint64_t grainIndex, std::uint16_t startSlice, std::uint16_t endSlice)
     {
-        // Post a transfer work item to all targets. If the target is not in a connected state
-        // this is a no-op.
-        // One target refusing the work is not a reason to withhold it from
-        // the others. A full send queue reports itself by throwing, and
-        // letting that escape the loop meant the targets after it in the
-        // map were silently skipped -- so a single backpressured peer
-        // stopped delivery to every other peer of the same initiator.
-        //
-        // The first failure is still reported to the caller once every
-        // target has been offered the transfer, so backpressure is not
-        // swallowed either.
+        // Post a transfer work item to all targets. A target that is not connected skips the grain; one whose window or send queue is
+        // full skips it too and reports not-ready. Either way the skip is counted for that target and the others still get the grain.
+        // The first failure is reported to the caller once every target has been offered the transfer.
         auto failure = std::exception_ptr{};
         for (auto& [_, target] : _targets)
         {
@@ -471,15 +506,7 @@ namespace mxl::lib::fabrics::ofi
 
     void RCInitiator::transferSamples(std::uint64_t headIndex, std::size_t count)
     {
-        // One target refusing the work is not a reason to withhold it from
-        // the others. A full send queue reports itself by throwing, and
-        // letting that escape the loop meant the targets after it in the
-        // map were silently skipped -- so a single backpressured peer
-        // stopped delivery to every other peer of the same initiator.
-        //
-        // The first failure is still reported to the caller once every
-        // target has been offered the transfer, so backpressure is not
-        // swallowed either.
+        // As for grains: a target that cannot take the batch skips it, and the first failure is reported after every target was offered it.
         auto failure = std::exception_ptr{};
         for (auto& [_, target] : _targets)
         {

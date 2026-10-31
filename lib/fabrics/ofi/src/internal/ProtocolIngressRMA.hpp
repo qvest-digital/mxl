@@ -54,11 +54,13 @@ namespace mxl::lib::fabrics::ofi
 
     /** \brief Receives kept posted for immediate data.
      *
-     * Large enough that a producer committing several batches between two
-     * transfer periods is absorbed without an RNR round trip, and far below
-     * the receive-queue size every provider we build against reports.
+     * Twice the transfers an initiator keeps in flight to one target, so a transfer carrying immediate data finds a receive posted even
+     * while the target has not yet re-posted the ones it consumed. The initiator gets no credit back from the target; should a receive
+     * still be missing, the transport falls back on RNR retry, which libfabric configures as unbounded, and the transfer is delayed rather
+     * than lost.
      */
     constexpr std::size_t DefaultReceiveDepth = 32;
+    static_assert(DefaultReceiveDepth >= (2 * MXL_FABRICS_MAX_TRANSFERS_IN_FLIGHT));
 
     /** \brief Ingress protocol for RMA writer endpoint.
      *

@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -91,16 +92,27 @@ namespace mxl::lib::fabrics::ofi
          */
         void transferSamples(std::uint64_t headIndex, std::size_t count);
 
+        /** \brief The transfer counters of the target.
+         */
+        [[nodiscard]]
+        mxlFabricsTargetStats stats() const noexcept;
+
+        /** \brief The first wait before reconnecting after a connection failed. Each further failure doubles it up to MaxReconnectDelay.
+         */
+        constexpr static auto MinReconnectDelay = std::chrono::milliseconds{100};
+        constexpr static auto MaxReconnectDelay = std::chrono::seconds{5};
+
     private:
         /** \brief The idle state.
          *
-         * In this state the endpoint waits to be activated. This will happen immediately if the endpoint was newly created, and after about 5 seconds
-         * if the endpoint has gone into the idle state because of a problem.
+         * In this state the endpoint waits to be activated. This will happen immediately if the endpoint was newly created, and after a delay
+         * that grows from MinReconnectDelay to MaxReconnectDelay if the endpoint has gone into the idle state because of a problem.
          */
         struct Idle
         {
             Endpoint ep;
             std::chrono::steady_clock::time_point idleSince; /**< Time since the endpoint has been idle. */
+            std::chrono::steady_clock::duration delay{};     /**< How long to stay idle before connecting again. */
         };
 
         /** \brief The connecting state.
@@ -156,9 +168,10 @@ namespace mxl::lib::fabrics::ofi
         Idle restart(Endpoint const& endpoint);
 
     private:
-        State _state;     /**< The internal state object. */
-        TargetInfo _info; /**< The target info of the remote endpoint */
+        State _state;                                          /**< The internal state object. */
+        TargetInfo _info;                                      /**< The target info of the remote endpoint */
         std::unique_ptr<EgressProtocol> _proto;
+        std::chrono::steady_clock::duration _reconnectDelay{}; /**< The wait before the next reconnection. Zero while connected. */
     };
 
     /** \brief An initiator that uses reliable connected endpoints to transfer data to targets.
@@ -192,6 +205,11 @@ namespace mxl::lib::fabrics::ofi
          */
         [[nodiscard]]
         virtual std::optional<mxlFabricsTargetState> targetState(TargetInfo const& targetInfo) const final;
+
+        /** \copydoc Initiator::targetStats()
+         */
+        [[nodiscard]]
+        virtual std::optional<mxlFabricsTargetStats> targetStats(TargetInfo const& targetInfo) const final;
 
         /** \copydoc Initiator::transferGrain()
          */
@@ -238,7 +256,7 @@ namespace mxl::lib::fabrics::ofi
          * \param eq The event queue to use for all endpoints created by this initiator.
          */
         RCInitiator(std::shared_ptr<Domain> domain, std::shared_ptr<CompletionQueue> cq, std::shared_ptr<EventQueue> eq,
-            std::unique_ptr<EgressProtocolTemplate> proto);
+            std::unique_ptr<EgressProtocolTemplate> proto, std::size_t maxTargets);
 
         /** \brief Block on the completion queue with a timeout.
          */
@@ -263,9 +281,10 @@ namespace mxl::lib::fabrics::ofi
 
     private:
         std::shared_ptr<Domain> _domain;
-        std::shared_ptr<CompletionQueue> _cq; /**< Completion Queue shared by all endpoints. */
-        std::shared_ptr<EventQueue> _eq;      /**< Event Queue shared by all endpoints. */
+        std::shared_ptr<CompletionQueue> _cq;                        /**< Completion Queue shared by all endpoints. */
+        std::shared_ptr<EventQueue> _eq;                             /**< Event Queue shared by all endpoints. */
         std::unique_ptr<EgressProtocolTemplate> _proto;
+        std::size_t _maxTargets;                                     /**< Endpoints the completion queue was sized for. */
 
         std::map<Completion::Token, RCInitiatorEndpoint> _targets{}; /**< Targets managed by this initiator. */
     };

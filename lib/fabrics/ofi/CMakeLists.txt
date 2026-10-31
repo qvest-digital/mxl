@@ -26,6 +26,7 @@ target_sources(mxl-fabrics-objects
             src/internal/CompletionQueue.cpp
             src/internal/DataLayout.cpp
             src/internal/Domain.cpp
+            src/internal/EgressWindow.cpp
             src/internal/Endpoint.cpp
             src/internal/Event.cpp
             src/internal/EventQueue.cpp

@@ -257,11 +257,13 @@ namespace mxl::lib::fabrics::ofi
          * \param remoteGroup Destination memory regions to write to
          * \param destAddr The destination address of the target endpoint. This is unused when using connected endpoints.
          * \param immData 64 bits of user data that will be available in the completion entry associated with this transfer.
+         * \param reportCompletion Ask for a completion. On an endpoint bound with FI_SELECTIVE_COMPLETION a write without it reports
+         * none, except an error on some providers; on any other endpoint every write reports one.
          * \return The number of requests posted to the endpoint work queue
          */
         [[nodiscard]]
         std::size_t write(Completion::Token token, LocalRegion const& local, RemoteRegion const& remote, ::fi_addr_t destAddr = FI_ADDR_UNSPEC,
-            std::optional<std::uint32_t> immData = std::nullopt) const;
+            std::optional<std::uint32_t> immData = std::nullopt, bool reportCompletion = true) const;
 
         /** \brief Push a remote write work request of a scatter-gather list to the endpoint work queue.
          *
@@ -305,7 +307,7 @@ namespace mxl::lib::fabrics::ofi
         /** \brief Internal implementation of the  remote write request
          */
         void writeImpl(Completion::Token token, ::iovec const* msgIov, std::size_t iovCount, void** desc, ::fi_rma_iov const* rmaIov,
-            ::fi_addr_t destAddr, std::optional<std::uint32_t> immData) const;
+            ::fi_addr_t destAddr, std::optional<std::uint32_t> immData, bool reportCompletion = true) const;
 
         /** \brief Close the endpoint and release all resources. Called from the destructor and the move assignment operator.
          */

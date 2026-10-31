@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <rdma/fabric.h>
 #include "DataLayout.hpp"
@@ -61,6 +62,18 @@ namespace mxl::lib::fabrics::ofi
         virtual void reset() = 0;
     };
 
+    /** \brief How an egress protocol paces what it hands to the provider for one target.
+     */
+    struct EgressConfig
+    {
+        std::size_t grainsInFlight{8};   /**< Grains one target may have in flight. */
+        std::size_t chunksPerGrain{1};   /**< Calls that send one grain. More than one signals and carries immediate data on the last only. */
+        std::size_t sendQueueDepth{0};   /**< Writes the provider accepts per endpoint. 0 means no limit is known. */
+        bool selectiveCompletion{false}; /**< The endpoint reports a completion only for writes that ask for one. */
+        std::function<std::uint64_t()> sourceHead{}; /**< The head index of the source flow, read when a grain completes to count it as
+                                                        torn. Empty counts nothing. */
+    };
+
     /** \brief Interface for transfer operations.
      *
      * Used to abstract away the details of how data is transferred to remote targets.
@@ -113,6 +126,15 @@ namespace mxl::lib::fabrics::ofi
          * \return The number of pending transfers.
          */
         virtual std::size_t reset() = 0;
+
+        /** \brief Count a transfer that was not offered to this protocol, for example because the target was not connected.
+         */
+        virtual void skip() = 0;
+
+        /** \brief The transfer counters of the target this protocol sends to.
+         */
+        [[nodiscard]]
+        virtual mxlFabricsTargetStats stats() const = 0;
     };
 
     /**
@@ -132,6 +154,11 @@ namespace mxl::lib::fabrics::ofi
          */
         [[nodiscard]]
         virtual std::unique_ptr<EgressProtocol> createInstance(Completion::Token token, TargetInfo remoteInfo) = 0;
+
+        /** \brief The most writes one instance keeps in flight, which is what a completion queue has to hold per target.
+         */
+        [[nodiscard]]
+        virtual std::size_t maxWritesInFlight() const noexcept = 0;
     };
 
     /** \brief Select an appropriate ingress protocol based on the data layout
@@ -149,5 +176,5 @@ namespace mxl::lib::fabrics::ofi
      * \return A unique pointer to the selected egress protocol.
      */
     [[nodiscard]]
-    std::unique_ptr<EgressProtocolTemplate> selectEgressProtocol(DataLayout const& layout, std::vector<Region> regions);
+    std::unique_ptr<EgressProtocolTemplate> selectEgressProtocol(DataLayout const& layout, std::vector<Region> regions, EgressConfig const& config);
 }

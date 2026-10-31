@@ -96,6 +96,10 @@ namespace mxl::lib::fabrics::ofi
         {
             _proto->transferGrain(ep, localIndex, remoteIndex, remotePayloadOffset, sliceRange, state->fiAddr);
         }
+        else if (sliceRange.start() == 0)
+        {
+            _proto->skip();
+        }
     }
 
     void RDMInitiatorTarget::transferSamples(Endpoint const& ep, std::uint64_t headIndex, std::size_t count)
@@ -104,6 +108,15 @@ namespace mxl::lib::fabrics::ofi
         {
             _proto->transferSamples(ep, headIndex, count, state->fiAddr);
         }
+        else
+        {
+            _proto->skip();
+        }
+    }
+
+    mxlFabricsTargetStats RDMInitiatorTarget::stats() const noexcept
+    {
+        return _proto->stats();
     }
 
     bool RDMInitiatorTarget::hasPendingWork() const noexcept
@@ -187,7 +200,16 @@ namespace mxl::lib::fabrics::ofi
         endpoint.enable();
 
         auto regions = MxlRegions::forReader(config.reader);
-        auto proto = selectEgressProtocol(regions.dataLayout(), regions.regions());
+        // The single endpoint reports a completion for every write, so the protocol counts each one.
+        auto proto = selectEgressProtocol(regions.dataLayout(),
+            regions.regions(),
+            EgressConfig{
+                .grainsInFlight = options.grainsInFlight,
+                .chunksPerGrain = options.chunksPerGrain,
+                .sendQueueDepth = 0,
+                .selectiveCompletion = false,
+                .sourceHead = sourceHeadOf(config.reader),
+            });
 
         proto->registerMemory(domain);
 
@@ -236,6 +258,20 @@ namespace mxl::lib::fabrics::ofi
             if (auto const target = _targets.find(remote->second); target != _targets.end())
             {
                 return target->second.state();
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    std::optional<mxlFabricsTargetStats> RDMInitiator::targetStats(TargetInfo const& targetInfo) const
+    {
+        auto const remote = _remoteEndpoints.find(targetInfo.id);
+        if (remote != _remoteEndpoints.end())
+        {
+            if (auto const target = _targets.find(remote->second); target != _targets.end())
+            {
+                return target->second.stats();
             }
         }
 

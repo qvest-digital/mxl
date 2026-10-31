@@ -41,6 +41,11 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         mxlFabricsTargetState state() const noexcept;
 
+        /** \brief The transfer counters of the target.
+         */
+        [[nodiscard]]
+        mxlFabricsTargetStats stats() const noexcept;
+
         /** \brief Try to activate the endpoint.
          *
          * The endpoint is activated by adding the remote address to the address vector.
@@ -134,6 +139,11 @@ namespace mxl::lib::fabrics::ofi
          */
         [[nodiscard]]
         virtual std::optional<mxlFabricsTargetState> targetState(TargetInfo const& targetInfo) const final;
+
+        /** \copydoc Initiator::targetStats()
+         */
+        [[nodiscard]]
+        virtual std::optional<mxlFabricsTargetStats> targetStats(TargetInfo const& targetInfo) const final;
 
         virtual void shutdown() final;
 
