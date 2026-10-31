@@ -315,8 +315,8 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: initiator f
     REQUIRE(mxlDestroyInstance(instance) == MXL_STATUS_OK);
 }
 
-// Needs a verbs device, so it is hidden from the default run. With soft-RoCE: MXL_TEST_VERBS_NODE=<address of the rxe netdev>, then run
-// the test binary with "[.rxe]".
+// Needs a verbs device, so it is hidden from the default run. With soft-RoCE: create an rxe link on a netdev, set
+// MXL_TEST_VERBS_NODE to that netdev's address, and run the test binary with "[.rxe]" where librdmacm can open the device.
 TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: verbs completion queue holds every write of two full targets",
     "[.rxe][fabrics][flow-control]")
 {

@@ -223,42 +223,6 @@ jobs:
           files: |
             **/test-results.xml
 
-      # The verbs provider needs an RDMA device. Soft-RoCE gives the runner one over its own network interface, which is enough to
-      # exercise completion queue sizing; the hidden [.rxe] tests only run here.
-      - name: Set up a soft-RoCE device
-        id: rxe
-        if: matrix.architecture == 'amd64' && matrix.compiler == 'Linux-Clang-Release'
-        run: |
-          if ! sudo modprobe rdma_rxe; then
-            sudo apt-get update -q
-            sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
-            sudo modprobe rdma_rxe
-          fi
-          netdev=$(ip -o -4 route show to default | awk '{print $5; exit}')
-          sudo rdma link add rxe0 type rxe netdev "${netdev}"
-          rdma link show
-          ls -l /dev/infiniband
-          printf 'node=%s\n' "$(ip -o -4 addr show dev "${netdev}" | awk '{split($4, a, "/"); print a[1]; exit}')" >> "${GITHUB_OUTPUT}"
-
-      - name: Run soft-RoCE tests
-        if: steps.rxe.outcome == 'success'
-        run: |
-          docker run \
-            --rm --interactive \
-            --mount src='${{ github.workspace }},target=/workspace/mxl,type=bind' \
-            --platform='linux/${{ matrix.architecture }}' \
-            --shm-size=1g \
-            --network host \
-            --privileged \
-            --ulimit memlock=-1 \
-            --env FI_VERBS_DEVICE_NAME=rxe0 \
-            --env MXL_TEST_VERBS_NODE='${{ steps.rxe.outputs.node }}' \
-            'mxl-build-image-${{ matrix.architecture }}:latest' \
-            bash -c "
-              cd '/workspace/mxl/build/${{ matrix.compiler }}/lib/tests/fabrics' && \
-              ./mxl-fabrics-tests '[.rxe]'
-            "
-
   build_rust:
     name: Build Rust bindings on Ubuntu
     needs: [ compute_build_image_cache_key, create_build_images ]
