@@ -245,7 +245,9 @@ jobs:
         run: |
           devices=()
           for dev in /dev/infiniband/*; do
-            devices+=(--device "${dev}")
+            if [ -c "${dev}" ]; then
+              devices+=(--device "${dev}")
+            fi
           done
           docker run \
             --rm --interactive \
