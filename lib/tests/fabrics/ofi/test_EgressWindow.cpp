@@ -133,7 +133,7 @@ TEST_CASE("Fabrics: egress window reports the transfer a completion ended, and c
     auto window = ofi::EgressWindow{4, 8};
     REQUIRE(window.open());
     window.wrote(false, false, 5, 100);
-    REQUIRE_FALSE(window.complete(true).has_value());
+    REQUIRE_FALSE(window.expectsCompletion());
     window.wrote(true, true, 5, 100);
     auto const index = window.complete(true);
     REQUIRE(index.has_value());
