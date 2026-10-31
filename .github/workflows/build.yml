@@ -243,21 +243,15 @@ jobs:
       - name: Run soft-RoCE tests
         if: steps.rxe.outcome == 'success'
         run: |
-          devices=()
-          for dev in /dev/infiniband/*; do
-            if [ -c "${dev}" ]; then
-              devices+=(--device "${dev}")
-            fi
-          done
           docker run \
             --rm --interactive \
             --mount src='${{ github.workspace }},target=/workspace/mxl,type=bind' \
             --platform='linux/${{ matrix.architecture }}' \
             --shm-size=1g \
             --network host \
-            "${devices[@]}" \
-            --cap-add IPC_LOCK \
+            --privileged \
             --ulimit memlock=-1 \
+            --env FI_VERBS_DEVICE_NAME=rxe0 \
             --env MXL_TEST_VERBS_NODE='${{ steps.rxe.outputs.node }}' \
             'mxl-build-image-${{ matrix.architecture }}:latest' \
             bash -c "
