@@ -229,9 +229,11 @@ jobs:
         id: rxe
         if: matrix.architecture == 'amd64' && matrix.compiler == 'Linux-Clang-Release'
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q "linux-modules-extra-$(uname -r)" iproute2
-          sudo modprobe rdma_rxe
+          if ! sudo modprobe rdma_rxe; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+            sudo modprobe rdma_rxe
+          fi
           netdev=$(ip -o -4 route show to default | awk '{print $5; exit}')
           sudo rdma link add rxe0 type rxe netdev "${netdev}"
           rdma link show
