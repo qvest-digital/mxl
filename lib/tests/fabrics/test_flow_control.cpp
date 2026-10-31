@@ -319,6 +319,43 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: a target th
     REQUIRE(stats.lastCompletedIndex == 1);
 }
 
+TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: a chunked grain that cannot fit all its chunks is skipped whole",
+    "[fabrics][flow-control]")
+{
+    // Two grains of four chunks: the window holds 8 writes. No progress is made, so nothing completes. Grain 0 is given up after three
+    // chunks, which stay in flight; grain 1 takes four more. Grain 2 then has room for one write only. Starting it would post its first
+    // chunk and run out of room on the second, leaving a partial grain at the target that the next grain's slot reuse never completes.
+    auto rig = Rig{domain, 1, MXL_FABRICS_PROVIDER_TCP, "127.0.0.1", R"({"grainsInFlight": 2, "chunksPerGrain": 4})"};
+    rig.addAllAndConnect();
+
+    constexpr std::uint16_t chunk = V210_SLICES / 4;
+    for (std::uint16_t start = 0; start < (V210_SLICES - chunk); start += chunk)
+    {
+        REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, 0, start, start + chunk) == MXL_STATUS_OK);
+    }
+    for (std::uint16_t start = 0; start < V210_SLICES; start += chunk)
+    {
+        REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, 1, start, start + chunk) == MXL_STATUS_OK);
+    }
+    REQUIRE(rig.statsOf(0).writesInFlight == 7);
+
+    REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, 2, 0, chunk) == MXL_ERR_NOT_READY);
+    for (std::uint16_t start = chunk; start < V210_SLICES; start += chunk)
+    {
+        REQUIRE(mxlFabricsInitiatorTransferGrain(rig.initiator, 2, start, start + chunk) == MXL_STATUS_OK);
+    }
+    auto stats = rig.statsOf(0);
+    REQUIRE(stats.writesInFlight == 7);
+    REQUIRE(stats.transfersPosted == 1);
+    REQUIRE(stats.transfersSkipped == 2);
+
+    REQUIRE(rig.drain(CONNECT_TIMEOUT));
+    stats = rig.statsOf(0);
+    REQUIRE(stats.transfersCompleted == 1);
+    REQUIRE(stats.lastCompletedIndex == 1);
+    REQUIRE(stats.accountingErrors == 0);
+}
+
 TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: a grain completing after its source slot was rewritten counts as torn",
     "[fabrics][flow-control]")
 {
