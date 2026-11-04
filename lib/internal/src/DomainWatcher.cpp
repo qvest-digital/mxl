@@ -308,10 +308,16 @@ namespace mxl::lib
 #elif defined __linux__
                 if (::inotify_rm_watch(_inotifyFd, wd) == -1)
                 {
+                    // EINVAL: the kernel removed the watch together with the deleted flow. Checking whether the flow still exists
+                    // would look up a name that the release has just removed.
                     auto const error = errno;
-                    if ((error != EINVAL) || std::filesystem::exists(record.fileName))
+                    if (error != EINVAL)
                     {
                         MXL_WARN("Failed to remove inotify watch (wd={}) for '{}': {}", wd, record.fileName, std::strerror(error));
+                    }
+                    else
+                    {
+                        MXL_DEBUG("The inotify watch (wd={}) for '{}' was removed with the deleted flow.", wd, record.fileName);
                     }
                 }
 #endif

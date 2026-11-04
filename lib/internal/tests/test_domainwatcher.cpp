@@ -8,7 +8,9 @@
 #include <filesystem>
 #include <fstream>
 #include <list>
+#include <memory>
 #include <random>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -18,6 +20,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <catch2/catch_test_macros.hpp>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 #include "mxl-internal/DiscreteFlowWriter.hpp"
 #include "mxl-internal/DomainWatcher.hpp"
 #include "mxl-internal/Flow.hpp"
@@ -29,7 +33,34 @@ using namespace mxl::lib;
 namespace fs = std::filesystem;
 
 namespace
-{}
+{
+    /** Make a logger the default spdlog logger for the lifetime of this object, and restore the previous default logger afterwards. */
+    class DefaultLoggerOverride
+    {
+    public:
+        /**
+         * Make a logger the default one.
+         * @param[in] logger The logger to make the default one.
+         */
+        explicit DefaultLoggerOverride(std::shared_ptr<spdlog::logger> logger)
+            : _previous{spdlog::default_logger()}
+        {
+            spdlog::set_default_logger(std::move(logger));
+        }
+
+        /** Restore the default logger that was set at construction. */
+        ~DefaultLoggerOverride()
+        {
+            spdlog::set_default_logger(_previous);
+        }
+
+        DefaultLoggerOverride(DefaultLoggerOverride const&) = delete;
+        DefaultLoggerOverride& operator=(DefaultLoggerOverride const&) = delete;
+
+    private:
+        std::shared_ptr<spdlog::logger> _previous; ///< The default logger to restore.
+    };
+}
 
 struct MockFlowFiles
 {
@@ -374,6 +405,29 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "DomainWatcher cleans
     // After destruction, the number of open fds should be back to the original count
     // (The DomainWatcher should have closed the two fds it opened: inotify and epoll)
     REQUIRE(fdsAfter == fdsBefore);
+}
+
+TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "DomainWatcher does not warn about the watch of a deleted flow", "[domainwatcher]")
+{
+    // Deleting the watched access file removes the inotify watch with it, so removing the writer afterwards fails with EINVAL. Another
+    // writer creates the flow again in between. Releasing the first writer must not warn about the watch that went with the old flow.
+    auto log = std::ostringstream{};
+    auto captureLogger = std::make_shared<spdlog::logger>("capture", std::make_shared<spdlog::sinks::ostream_sink_mt>(log));
+    captureLogger->set_level(spdlog::level::warn);
+    // Restores the previous default logger before the stream it writes to goes away, also when a step below throws.
+    auto const loggerOverride = DefaultLoggerOverride{std::move(captureLogger)};
+
+    auto const flowId = *uuids::uuid::from_string("5fbec3b1-1b0f-417d-9059-8b94a47197ed");
+    auto watcher = std::make_shared<DomainWatcher>(domain);
+    auto flowFiles = std::make_unique<MockFlowFiles>(domain, flowId);
+    auto writer = std::make_unique<MockWriter>(domain, flowId, watcher);
+
+    flowFiles.reset();
+    flowFiles = std::make_unique<MockFlowFiles>(domain, flowId);
+    writer.reset();
+
+    CAPTURE(log.str());
+    CHECK(log.str().find("Failed to remove inotify watch") == std::string::npos);
 }
 #endif // __linux__
 
