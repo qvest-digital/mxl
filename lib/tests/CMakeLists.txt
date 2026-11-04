@@ -74,10 +74,36 @@ target_compile_definitions(mxl-tests
             MXL_EVENT_IPC_WORKER="$<TARGET_FILE:mxl-event-ipc-worker>"
     )
 
+# Interposes the stat family and open to record which paths a flow writer's release walks to, so it runs in an executable of its own
+# rather than changing those calls for every other test. Linux only, for the Linux libc symbols it interposes.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(mxl-release-walk-tests)
+    set_target_properties(mxl-release-walk-tests
+            PROPERTIES
+                CXX_EXTENSIONS               OFF
+                CXX_STANDARD                 ${MXL_CXX_STANDARD}
+        )
+    target_sources(mxl-release-walk-tests
+            PRIVATE
+                test_release_walks.cpp
+        )
+    target_link_libraries(mxl-release-walk-tests
+            PRIVATE
+                mxl
+                mxl-internal-headers
+                stduuid
+                Catch2::Catch2WithMain
+                ${CMAKE_DL_LIBS}
+        )
+endif()
+
 # Enable testing using CTest
 include(CTest)
 include(Catch)
 catch_discover_tests(mxl-tests)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    catch_discover_tests(mxl-release-walk-tests)
+endif()
 
 set(MXL_LINKER_FLAG "")
 if(CMAKE_LINKER_TYPE STREQUAL "LLD")
