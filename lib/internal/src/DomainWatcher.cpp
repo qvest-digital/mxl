@@ -308,8 +308,9 @@ namespace mxl::lib
 #elif defined __linux__
                 if (::inotify_rm_watch(_inotifyFd, wd) == -1)
                 {
+                    // EINVAL: the watch went with the deleted file. An existence check would walk to the missing flow name.
                     auto const error = errno;
-                    if ((error != EINVAL) || std::filesystem::exists(record.fileName))
+                    if (error != EINVAL)
                     {
                         MXL_WARN("Failed to remove inotify watch (wd={}) for '{}': {}", wd, record.fileName, std::strerror(error));
                     }
