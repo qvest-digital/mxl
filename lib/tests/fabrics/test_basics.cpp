@@ -287,6 +287,166 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics connection o
     REQUIRE(mxlDestroyInstance(instance) == MXL_STATUS_OK);
 }
 
+// A restarted source connects with a new initiator to the address the target published at setup. The target must accept it on that address,
+// whether the old initiator shut its connection down or went away without a shutdown reaching the target.
+TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC target accepts a new initiator on the same address",
+    "[fabrics][connected][reconnect]")
+{
+    auto instance = mxlCreateInstance(domain.c_str(), "");
+
+    auto flowDef = mxl::tests::readFile("../data/v210_flow.json");
+    auto const flowId = "5fbec3b1-1b0f-417d-9059-8b94a47197ed";
+
+    auto writer = mxlFlowWriter{};
+    REQUIRE(mxlCreateFlowWriter(instance, flowDef.c_str(), nullptr, &writer, nullptr, nullptr) == MXL_STATUS_OK);
+
+    auto reader = mxlFlowReader{};
+    REQUIRE(mxlCreateFlowReader(instance, flowId, "", &reader) == MXL_STATUS_OK);
+
+    auto fabrics = mxlFabricsInstance{};
+    REQUIRE(mxlFabricsCreateInstance(instance, nullptr, &fabrics) == MXL_STATUS_OK);
+
+    auto target = mxlFabricsTarget{};
+    REQUIRE(mxlFabricsCreateTarget(fabrics, &target) == MXL_STATUS_OK);
+
+    auto targetConfig = mxlFabricsTargetConfig{
+        .version = MXL_FABRICS_API_VERSION,
+        .interface = {.version = MXL_FABRICS_API_VERSION,
+                      .provider = MXL_FABRICS_PROVIDER_TCP,
+                      .caps =
+                {
+                    .version = MXL_FABRICS_API_VERSION,
+                    .flags = MXL_FABRICS_IFACE_CAP_BLOCKING_OPERATIONS | MXL_FABRICS_IFACE_CAP_REMOTE_WRITE,
+                    .maxMessageSize = 0,
+                }, .address = {.node = "127.0.0.1", .service = nullptr},
+                      .attr = nullptr},
+        .writer = writer,
+    };
+    auto targetInfo = mxlFabricsTargetInfo{};
+    REQUIRE(mxlFabricsTargetSetup(target, &targetConfig, nullptr, &targetInfo) == MXL_STATUS_OK);
+
+    auto initiatorConfig = mxlFabricsInitiatorConfig{
+        .version = MXL_FABRICS_API_VERSION,
+        .interface = {.version = MXL_FABRICS_API_VERSION,
+                      .provider = MXL_FABRICS_PROVIDER_TCP,
+                      .caps =
+                {
+                    .version = MXL_FABRICS_API_VERSION,
+                    .flags = MXL_FABRICS_IFACE_CAP_BLOCKING_OPERATIONS | MXL_FABRICS_IFACE_CAP_REMOTE_WRITE,
+                    .maxMessageSize = 0,
+                }, .address = {.node = "127.0.0.1", .service = nullptr},
+                      .attr = nullptr},
+        .reader = reader,
+    };
+
+    auto const blocking = GENERATE(false, true);
+    auto targetIndex = std::uint64_t{0};
+    auto const targetRead = [&]()
+    {
+        return blocking ? mxlFabricsTargetReadGrain(target, BLOCKING_WAIT.count(), &targetIndex)
+                        : mxlFabricsTargetReadGrainNonBlocking(target, &targetIndex);
+    };
+
+    auto const progressOf = [&](mxlFabricsInitiator initiator)
+    {
+        return [&, initiator]()
+        {
+            return blocking ? mxlFabricsInitiatorMakeProgressBlocking(initiator, BLOCKING_WAIT.count())
+                            : mxlFabricsInitiatorMakeProgressNonBlocking(initiator);
+        };
+    };
+
+    // Transfer one grain through an initiator that is connected to the target.
+    auto const transfer = [&](mxlFabricsInitiator initiator, std::uint64_t grainIndex)
+    {
+        auto const progress = progressOf(initiator);
+
+        // The target reports the index from the grain header the transfer carries, so the grain must exist in the shared ring first.
+        auto grainInfo = mxlGrainInfo{};
+        auto payload = static_cast<std::uint8_t*>(nullptr);
+        REQUIRE(mxlFlowWriterOpenGrain(writer, grainIndex, &grainInfo, &payload) == MXL_STATUS_OK);
+        REQUIRE(mxlFlowWriterCommitGrain(writer, &grainInfo) == MXL_STATUS_OK);
+
+        waitForTransferStart([&]() { targetRead(); },
+            [&]() { requireProgressStatus(progress, "initiator"); },
+            [&]() { return mxlFabricsInitiatorTransferGrain(initiator, grainIndex, 0, 1); });
+        waitForTransferCompletion([&]() { requireProgressStatus(progress, "initiator"); }, targetRead);
+
+        REQUIRE(targetIndex == grainIndex);
+    };
+
+    // Connect an initiator to the published target info and transfer one grain through it.
+    auto const connectAndTransfer = [&](mxlFabricsInitiator initiator, std::uint64_t grainIndex)
+    {
+        REQUIRE(mxlFabricsInitiatorSetup(initiator, &initiatorConfig, nullptr) == MXL_STATUS_OK);
+        REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
+
+        waitForConnection([&]() { targetRead(); }, progressOf(initiator));
+        transfer(initiator, grainIndex);
+    };
+
+    auto first = mxlFabricsInitiator{};
+    REQUIRE(mxlFabricsCreateInitiator(fabrics, &first) == MXL_STATUS_OK);
+    connectAndTransfer(first, 1);
+
+    SECTION("after the first initiator shut its connection down")
+    {
+        REQUIRE(mxlFabricsInitiatorRemoveTarget(first, targetInfo) == MXL_STATUS_OK);
+        pollUntilSuccess(
+            [&]()
+            {
+                targetRead();
+                return mxlFabricsInitiatorMakeProgressNonBlocking(first) == MXL_STATUS_OK;
+            },
+            POLL_TIMEOUT,
+            "Initiator did not shut its connection down in 5 seconds");
+
+        // Give the target time to read the shutdown event before the next initiator connects.
+        auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            targetRead();
+        }
+    }
+
+    auto firstHoldsConnection = false;
+    SECTION("while the first initiator still holds its connection")
+    {
+        // The first initiator is not progressed or shut down until the second one has connected, so the target never gets a shutdown event
+        // for its connection, as when the source node fails.
+        firstHoldsConnection = true;
+    }
+
+    auto second = mxlFabricsInitiator{};
+    REQUIRE(mxlFabricsCreateInitiator(fabrics, &second) == MXL_STATUS_OK);
+    connectAndTransfer(second, 2);
+
+    if (firstHoldsConnection)
+    {
+        // The target closed the first initiator's connection when it accepted the second. The first initiator gets a shutdown event and
+        // drops the target, so its progress reports that it has none left. It does not connect again, so the second initiator keeps the
+        // target.
+        pollUntilSuccess(
+            [&]()
+            {
+                targetRead();
+                return mxlFabricsInitiatorMakeProgressNonBlocking(first) == MXL_ERR_INTERRUPTED;
+            },
+            POLL_TIMEOUT,
+            "First initiator did not drop the target in 5 seconds");
+        transfer(second, 3);
+    }
+
+    REQUIRE(mxlFabricsDestroyInitiator(fabrics, second) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsDestroyInitiator(fabrics, first) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsFreeTargetInfo(targetInfo) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsDestroyTarget(fabrics, target) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsDestroyInstance(fabrics) == MXL_STATUS_OK);
+    REQUIRE(mxlReleaseFlowReader(instance, reader) == MXL_STATUS_OK);
+    REQUIRE(mxlReleaseFlowWriter(instance, writer) == MXL_STATUS_OK);
+    REQUIRE(mxlDestroyInstance(instance) == MXL_STATUS_OK);
+}
+
 TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics connectionless activation tests", "[fabrics][connectionless][activation]")
 {
     auto instance = mxlCreateInstance(domain.c_str(), "");

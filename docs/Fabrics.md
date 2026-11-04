@@ -90,6 +90,8 @@ Every endpoint is bound to an event queue. Connected endpoints receive their con
 
 Connection-oriented data transfer follows the Berkeley Sockets model. A listener (server) waits to accept incoming connections while a client initiates the connection to that listener. After the connection is established, bidirectional data transfer becomes possible.
 
+A connection-oriented target listens on the address in its target info until it is destroyed, so an initiator can connect again with the same target info after a disconnect. A target has one connection at a time. A connection request that arrives while a connection is up or being set up closes that connection, because the target cannot tell an initiator that went away without a shutdown from one that is still running. An initiator whose established connection is closed this way removes the target and does not connect again.
+
 #### 5.1.3 Connection-less
 
 As the name implies, the connection-less approach operates without a server-client relationship. Instead, each initiating endpoint maintains an address vector containing the target addresses for data transfers.

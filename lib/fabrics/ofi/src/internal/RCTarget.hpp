@@ -19,6 +19,7 @@ namespace mxl::lib::fabrics::ofi
      *
      * An RC Target uses connection-oriented endpoint type. It listens for incoming connection requests from an Initiator to establish connection.
      * Once connected, it polls its completion queues to see if new data can be consumed. be read from the connected endpoint.
+     * The passive endpoint listens until the target is destroyed, and a newer connection request replaces the current connection.
      */
     class RCTarget : public Target
     {
@@ -43,12 +44,10 @@ namespace mxl::lib::fabrics::ofi
     private:
         /** \brief The wait for connection request state.
          *
-         * The RCTarget has a passive endpoint, and is waiting for an incoming connection request.
+         * The RCTarget has no connection, and is waiting for an incoming connection request.
          */
         struct WaitForConnectionRequest
-        {
-            PassiveEndpoint pep;
-        };
+        {};
 
         /** \brief The wait for connection state.
          *
@@ -89,6 +88,14 @@ namespace mxl::lib::fabrics::ofi
         template<QueueReadMode>
         std::optional<Target::ReadResult> readNext(std::chrono::steady_clock::duration timeout);
 
+        /** \brief Accept a connection request on a new endpoint.
+         *
+         * \param[in] request The connection request event read from the passive endpoint's event queue.
+         * \return WaitForConnection holding the new endpoint, or WaitForConnectionRequest if the provider failed to accept it.
+         */
+        [[nodiscard]]
+        State accept(Event const& request);
+
         [[nodiscard]]
         static PassiveEndpoint makeListener(std::shared_ptr<Fabric> const& fabric);
 
@@ -96,6 +103,7 @@ namespace mxl::lib::fabrics::ofi
         std::unique_ptr<IngressProtocol> _proto;
         std::shared_ptr<Domain> _domain;
         TargetSetupOptions _setupOptions; /**< Setup options applied when accepting connections. */
+        PassiveEndpoint _pep;             /**< Listens on the published address for the lifetime of the target. */
         State _state;                     /**< The current state of the RCTarget. */
     };
 }
