@@ -242,7 +242,11 @@ namespace mxl::lib::fabrics::ofi
         {
             if (timeout < Endpoint::EQReadInterval)
             {
-                makeProgress();
+                if (std::holds_alternative<Initiator::Ready>(makeProgress()))
+                {
+                    return Initiator::Ready{};
+                }
+
                 blockOnCQ(timeout);
                 return afterProgressResult();
             }
