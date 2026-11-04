@@ -527,7 +527,10 @@ namespace mxl::lib::fabrics::ofi
         // and block on the completion queue for the rest of the time.
         if (timeout < EQPollInterval)
         {
-            makeProgress();
+            if (std::holds_alternative<Initiator::Ready>(makeProgress()))
+            {
+                return Initiator::Ready{};
+            }
             return blockOnCQ(timeout);
         }
 
