@@ -524,10 +524,14 @@ namespace mxl::lib::fabrics::ofi
     Initiator::MakeProgressResult RCInitiator::makeProgressBlocking(std::chrono::steady_clock::duration timeout)
     {
         // If the timeout is less than our maintainance interval, just check all the queues once, execute all maintainance tasks once
-        // and block on the completion queue for the rest of the time.
+        // and block on the completion queue for the rest of the time if work is still pending.
         if (timeout < EQPollInterval)
         {
-            makeProgress();
+            if (std::holds_alternative<Initiator::Ready>(makeProgress()))
+            {
+                return Initiator::Ready{};
+            }
+
             return blockOnCQ(timeout);
         }
 
