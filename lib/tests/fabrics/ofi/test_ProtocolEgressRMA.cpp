@@ -75,3 +75,33 @@ TEST_CASE("ofi: audio staging copy unpacks into a ring at a different position",
     REQUIRE(unpackedHeader.count == SampleCount);
     REQUIRE(target == expectedTarget);
 }
+
+TEST_CASE("ofi: audio staging size rejects an unusable target geometry", "[ofi][ProtocolEgressRMA]")
+{
+    constexpr auto EntryCount = std::size_t{4};
+    constexpr auto EntrySize = std::size_t{64};
+
+    auto info = TargetInfo{};
+    info.remoteRegions = std::vector<RemoteRegion>(EntryCount, RemoteRegion{.addr = 0, .len = EntrySize, .rkey = 0});
+    info.bounceBufferInfo = TargetInfoBounceBufferInfo{.entryCount = EntryCount, .entrySize = EntrySize};
+    REQUIRE(RMASampleEgressProtocol::stagingSize(info, EntryCount) == EntryCount * EntrySize);
+
+    // No bounce buffer at all.
+    auto noBounceBuffer = info;
+    noBounceBuffer.bounceBufferInfo.reset();
+    REQUIRE_THROWS(RMASampleEgressProtocol::stagingSize(noBounceBuffer, EntryCount));
+
+    // No entries, or a count that does not match the remote regions.
+    REQUIRE_THROWS(RMASampleEgressProtocol::stagingSize(info, 0));
+    REQUIRE_THROWS(RMASampleEgressProtocol::stagingSize(info, EntryCount - 1));
+
+    // Empty entries.
+    info.bounceBufferInfo->entrySize = 0;
+    REQUIRE_THROWS(RMASampleEgressProtocol::stagingSize(info, EntryCount));
+
+    // At most MaxStagingSize in all.
+    info.bounceBufferInfo->entrySize = RMASampleEgressProtocol::MaxStagingSize / EntryCount;
+    REQUIRE(RMASampleEgressProtocol::stagingSize(info, EntryCount) == RMASampleEgressProtocol::MaxStagingSize);
+    info.bounceBufferInfo->entrySize += 1;
+    REQUIRE_THROWS(RMASampleEgressProtocol::stagingSize(info, EntryCount));
+}

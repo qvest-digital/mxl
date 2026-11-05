@@ -119,6 +119,21 @@ namespace mxl::lib::fabrics::ofi
         static void copySamples(DataLayout::Continuous const& layout, std::uint64_t headIndex, std::size_t count, LocalRegion const& region,
             std::uint8_t* dst);
 
+        /** \brief Get the size of the staging copy of a target's bounce buffer. The geometry comes from the target, and the staging copy is
+         * allocated and registered at that size, so it is checked first.
+         * \param[in] info The target info, with the target's bounce buffer geometry and remote regions.
+         * \param[in] entryCount The number of bounce buffer entries.
+         * \return entryCount times the entry size in bytes.
+         * \throws Exception::invalidArgument if the target reports no bounce buffer, there are no entries, the entries are empty, entryCount differs
+         * from the number of remote regions, or the size exceeds MaxStagingSize.
+         */
+        static std::size_t stagingSize(TargetInfo const& info, std::size_t entryCount);
+
+        /** \brief Upper bound on the staging copy of one target's bounce buffer, in bytes. The staging copy is about the size of the target's
+         * ring, and 256 MiB holds the ring of a 64-channel 48 kHz flow with about 10 s of history, 50 times the default history duration.
+         */
+        constexpr static auto MaxStagingSize = std::size_t{256} * 1024 * 1024;
+
     private:
         friend class RMASampleEgressProtocolTemplate;
 

@@ -137,9 +137,27 @@ namespace mxl::lib::fabrics::ofi
         , _remoteInfo{std::move(info)}
         , _layout{layout}
         , _localRegion{localRegion}
-        , _staging(bounceBufferEntryCount * _remoteInfo.bounceBufferInfo->entrySize)
+        , _staging(stagingSize(_remoteInfo, bounceBufferEntryCount))
         , _bounceBufferEntryCount{bounceBufferEntryCount}
     {}
+
+    std::size_t RMASampleEgressProtocol::stagingSize(TargetInfo const& info, std::size_t entryCount)
+    {
+        if (!info.bounceBufferInfo)
+        {
+            throw Exception::invalidArgument("The target reports no bounce buffer.");
+        }
+
+        auto const entrySize = info.bounceBufferInfo->entrySize;
+        if ((entryCount == 0) || (entrySize == 0) || (entryCount != info.remoteRegions.size()) || (entrySize > (MaxStagingSize / entryCount)))
+        {
+            throw Exception::invalidArgument("Unusable bounce buffer geometry from the target: {} entries of {} bytes, {} remote regions.",
+                entryCount,
+                entrySize,
+                info.remoteRegions.size());
+        }
+        return entryCount * entrySize;
+    }
 
     void RMASampleEgressProtocol::registerMemory(std::shared_ptr<Domain> domain)
     {
@@ -162,9 +180,10 @@ namespace mxl::lib::fabrics::ofi
 
     void RMASampleEgressProtocol::transferSamples(Endpoint const& ep, std::uint64_t headIndex, std::size_t count, ::fi_addr_t destAddr)
     {
-        if (count == 0)
+        // The slices of a batch longer than the source ring would reach past the end of the ring.
+        if ((count == 0) || (count > _layout.bufferLength))
         {
-            throw Exception::invalidArgument("Count must be greater than 0.");
+            throw Exception::invalidArgument("Count must be greater than 0 and at most the ring length {}, got {}.", _layout.bufferLength, count);
         }
 
         auto const entrySize = _remoteInfo.bounceBufferInfo->entrySize;
@@ -285,6 +304,8 @@ namespace mxl::lib::fabrics::ofi
             {}
         };
 
-        return std::make_unique<MakeUniqueEnabler>(token, std::move(remoteInfo), _layout, *_localRegion, remoteInfo.bounceBufferInfo->entryCount);
+        // A target info without a bounce buffer is refused by stagingSize().
+        auto const entryCount = remoteInfo.bounceBufferInfo ? remoteInfo.bounceBufferInfo->entryCount : std::size_t{0};
+        return std::make_unique<MakeUniqueEnabler>(token, std::move(remoteInfo), _layout, *_localRegion, entryCount);
     };
 }
