@@ -36,8 +36,11 @@ namespace mxl::lib::fabrics::ofi
         virtual std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo() const = 0;
 
         /** \brief Start receiving.
+         * \param[in] endpoint The connected endpoint to receive on.
+         * \param[in] receiveCount The number of receives to keep posted where the provider delivers immediate data into posted receives
+         * (FI_RX_CQ_DATA). Each one can complete before the application reads the completion queue, so it must not exceed the queue's depth.
          */
-        virtual void start(Endpoint const& endpoint) = 0;
+        virtual void start(Endpoint const& endpoint, std::size_t receiveCount) = 0;
 
         /** \brief Process a completion with the given immediate data.
          * \param endpoint The endpoint associated with the completion

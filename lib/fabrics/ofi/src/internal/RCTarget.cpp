@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "RCTarget.hpp"
+#include <algorithm>
 #include <mxl-internal/Logging.hpp>
 #include <rdma/fabric.h>
 #include "Exception.hpp"
@@ -146,8 +147,10 @@ namespace mxl::lib::fabrics::ofi
                             // We have a connected event, so we can transition to the connected state
                             auto connected = Connected{.ep = std::move(state.ep)};
 
-                            // The endpoint is now ready, initialize the protocol.
-                            _proto->start(connected.ep);
+                            // The endpoint is now ready, initialize the protocol. An initiator can land a write on every posted receive before
+                            // this target reads one completion, so no more are posted than the completion queue and the receive queue hold.
+                            auto const cqDepth = _setupOptions.cqDepth.value_or(CompletionQueue::Attributes::DEFAULT_SIZE);
+                            _proto->start(connected.ep, std::min(cqDepth, connected.ep.info()->rx_attr->size));
 
                             return connected;
                         }
