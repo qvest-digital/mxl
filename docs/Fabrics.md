@@ -442,5 +442,12 @@ mxlFabricsTargetSetup(target, &config, "{\"cqDepth\": 256}", &targetInfo);
 
 When the option is omitted, a small implementation default is used, which is
 adequate for low-rate, promptly-drained receivers but should be raised for the
-high-rate / many-stream / slow-processing cases described above. `cqDepth`
+high-rate / many-stream / slow-processing cases described above.
+
+On providers that deliver immediate data into posted receives (`verbs`), each
+grain or sample batch written to a connected target consumes one posted
+receive. The target keeps `cqDepth` receives posted, or fewer if the
+endpoint's receive queue is smaller, and posts one again for each completion
+it reads. That many transfers can land before the target reads a completion;
+a further one finds no receive posted until the target reads one. `cqDepth`
 applies to target endpoints; it is ignored for initiators.

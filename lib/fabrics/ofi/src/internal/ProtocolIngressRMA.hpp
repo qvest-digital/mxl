@@ -32,7 +32,7 @@ namespace mxl::lib::fabrics::ofi
 
         /** \copydoc IngressProtocol::start()
          */
-        virtual void start(Endpoint const& endpoint) override;
+        virtual void start(Endpoint const& endpoint, std::size_t receiveCount) override;
 
         /** \copydoc IngressProtocol::processCompletion()
          */
@@ -84,7 +84,7 @@ namespace mxl::lib::fabrics::ofi
         [[nodiscard]]
         virtual std::optional<TargetInfoBounceBufferInfo> bounceBufferInfo() const override;
 
-        virtual void start(Endpoint const& endpoint) override;
+        virtual void start(Endpoint const& endpoint, std::size_t receiveCount) override;
 
         /** \copydoc IngressProtocol::processCompletion()
          */

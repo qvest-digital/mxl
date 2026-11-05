@@ -8,6 +8,8 @@
 #include <cstring>
 #include <algorithm>
 #include <random>
+#include <string>
+#include <type_traits>
 #include <vector>
 #include <uuid.h>
 #include <catch2/catch_message.hpp>
@@ -1462,6 +1464,126 @@ TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: Initiator s
         REQUIRE(setupWithOptions("{not json") == MXL_ERR_INVALID_ARG);
     }
 
+    REQUIRE(mxlFabricsDestroyInstance(fabrics) == MXL_STATUS_OK);
+    REQUIRE(mxlReleaseFlowReader(instance, reader) == MXL_STATUS_OK);
+    REQUIRE(mxlReleaseFlowWriter(instance, writer) == MXL_STATUS_OK);
+    REQUIRE(mxlDestroyInstance(instance) == MXL_STATUS_OK);
+}
+
+// On a provider that delivers immediate data into posted receives, every grain written to an RC target consumes one posted receive. The target
+// keeps as many posted as its completion queue holds: an initiator can complete that many writes before the target reads one, the next one
+// waits for a receive to be posted again, and each completion read posts one again. Needs a verbs device, such as a soft-RoCE one.
+TEST_CASE_PERSISTENT_FIXTURE(mxl::tests::mxlDomainFixture, "Fabrics: RC target keeps cqDepth receives posted", "[fabrics][connected][verbs]")
+{
+    constexpr auto CqDepth = 4;
+
+    auto instance = mxlCreateInstance(domain.c_str(), "");
+    auto fabrics = mxlFabricsInstance{};
+    REQUIRE(mxlFabricsCreateInstance(instance, nullptr, &fabrics) == MXL_STATUS_OK);
+
+    auto query = mxlFabricsInterfaceConfig{};
+    query.version = MXL_FABRICS_API_VERSION;
+    query.provider = MXL_FABRICS_PROVIDER_VERBS;
+    auto interfaces = std::add_pointer_t<mxlFabricsInterfaceList>{nullptr};
+    if ((mxlFabricsGetInterfaces(fabrics, &query, &interfaces) != MXL_STATUS_OK) || (interfaces == nullptr))
+    {
+        REQUIRE(mxlFabricsDestroyInstance(fabrics) == MXL_STATUS_OK);
+        REQUIRE(mxlDestroyInstance(instance) == MXL_STATUS_OK);
+        SKIP("No verbs interface on this host");
+    }
+
+    auto iface = interfaces->interface;
+    iface.caps = {
+        .version = MXL_FABRICS_API_VERSION,
+        .flags = MXL_FABRICS_IFACE_CAP_BLOCKING_OPERATIONS | MXL_FABRICS_IFACE_CAP_REMOTE_WRITE,
+        .maxMessageSize = 0,
+    };
+    iface.address.service = nullptr;
+    iface.attr = nullptr;
+
+    auto flowDef = mxl::tests::readFile("../data/v210_flow.json");
+    auto const flowId = "5fbec3b1-1b0f-417d-9059-8b94a47197ed";
+
+    auto writer = mxlFlowWriter{};
+    REQUIRE(mxlCreateFlowWriter(instance, flowDef.c_str(), nullptr, &writer, nullptr, nullptr) == MXL_STATUS_OK);
+    auto reader = mxlFlowReader{};
+    REQUIRE(mxlCreateFlowReader(instance, flowId, "", &reader) == MXL_STATUS_OK);
+
+    auto target = mxlFabricsTarget{};
+    REQUIRE(mxlFabricsCreateTarget(fabrics, &target) == MXL_STATUS_OK);
+    auto targetConfig = mxlFabricsTargetConfig{.version = MXL_FABRICS_API_VERSION, .interface = iface, .writer = writer};
+    auto targetInfo = mxlFabricsTargetInfo{};
+    auto const options = std::string{R"({"cqDepth": )"} + std::to_string(CqDepth) + "}";
+    REQUIRE(mxlFabricsTargetSetup(target, &targetConfig, options.c_str(), &targetInfo) == MXL_STATUS_OK);
+
+    auto initiator = mxlFabricsInitiator{};
+    REQUIRE(mxlFabricsCreateInitiator(fabrics, &initiator) == MXL_STATUS_OK);
+    auto initiatorConfig = mxlFabricsInitiatorConfig{.version = MXL_FABRICS_API_VERSION, .interface = iface, .reader = reader};
+    REQUIRE(mxlFabricsInitiatorSetup(initiator, &initiatorConfig, nullptr) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsInitiatorAddTarget(initiator, targetInfo) == MXL_STATUS_OK);
+
+    auto grainIndex = std::uint64_t{0};
+    waitForConnection([&]() { mxlFabricsTargetReadGrainNonBlocking(target, &grainIndex); },
+        [&]() { return mxlFabricsInitiatorMakeProgressNonBlocking(initiator); });
+
+    auto nextGrain = std::uint64_t{0};
+    auto transfer = [&](int count)
+    {
+        for (auto i = 0; i < count; ++i)
+        {
+            REQUIRE(mxlFabricsInitiatorTransferGrain(initiator, nextGrain++, 0, 1) == MXL_STATUS_OK);
+        }
+    };
+    auto initiatorDone = [&]()
+    {
+        return mxlFabricsInitiatorMakeProgressNonBlocking(initiator) == MXL_STATUS_OK;
+    };
+    auto readGrains = [&](int count)
+    {
+        auto read = 0;
+        pollUntilSuccess(
+            [&]()
+            {
+                requireProgressStatus([&]() { return mxlFabricsInitiatorMakeProgressNonBlocking(initiator); }, "initiator");
+                if (mxlFabricsTargetReadGrainNonBlocking(target, &grainIndex) == MXL_STATUS_OK)
+                {
+                    ++read;
+                }
+                return read == count;
+            },
+            POLL_TIMEOUT,
+            "The target did not read every grain in 5 seconds");
+    };
+
+    // The initiator reports the connection before the target has seen it and posted its receives. Reading the first grain shows they are.
+    transfer(1);
+    readGrains(1);
+    pollUntilSuccess(initiatorDone, POLL_TIMEOUT, "The first transfer did not complete in 5 seconds");
+
+    // As many writes as the completion queue holds complete without the target reading any of them.
+    transfer(CqDepth);
+    pollUntilSuccess(initiatorDone, POLL_TIMEOUT, "Writes within the receive window did not complete in 5 seconds");
+
+    // One more finds no receive posted until the target reads a completion.
+    transfer(1);
+    auto const deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        REQUIRE_FALSE(initiatorDone());
+    }
+
+    // Every completion read posts a receive again, so the waiting write lands and the window is whole again.
+    readGrains(CqDepth + 1);
+    pollUntilSuccess(initiatorDone, POLL_TIMEOUT, "The write beyond the receive window did not complete in 5 seconds");
+    transfer(CqDepth);
+    pollUntilSuccess(initiatorDone, POLL_TIMEOUT, "Writes within the reopened receive window did not complete in 5 seconds");
+    readGrains(CqDepth);
+
+    REQUIRE(mxlFabricsInitiatorRemoveTarget(initiator, targetInfo) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsFreeTargetInfo(targetInfo) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsDestroyInitiator(fabrics, initiator) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsDestroyTarget(fabrics, target) == MXL_STATUS_OK);
+    REQUIRE(mxlFabricsFreeInterfaceList(interfaces) == MXL_STATUS_OK);
     REQUIRE(mxlFabricsDestroyInstance(fabrics) == MXL_STATUS_OK);
     REQUIRE(mxlReleaseFlowReader(instance, reader) == MXL_STATUS_OK);
     REQUIRE(mxlReleaseFlowWriter(instance, writer) == MXL_STATUS_OK);
