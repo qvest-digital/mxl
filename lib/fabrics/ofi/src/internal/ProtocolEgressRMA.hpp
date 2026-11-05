@@ -36,6 +36,10 @@ namespace mxl::lib::fabrics::ofi
          */
         virtual void processCompletion(Completion::Data const&) final;
 
+        /** \copydoc EgressProtocol::processCompletionError()
+         */
+        virtual void processCompletionError(Completion::Error const&) final;
+
         /** \copydoc EgressProtocol::hasPendingWork()
          */
         [[nodiscard]]
@@ -99,6 +103,10 @@ namespace mxl::lib::fabrics::ofi
         /** \copydoc EgressProtocol::processCompletion()
          */
         virtual void processCompletion(Completion::Data const&) final;
+
+        /** \copydoc EgressProtocol::processCompletionError()
+         */
+        virtual void processCompletionError(Completion::Error const&) final;
 
         /** \copydoc EgressProtocol::hasPendingWork()
          */

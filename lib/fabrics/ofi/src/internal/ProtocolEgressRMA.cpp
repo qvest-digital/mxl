@@ -88,6 +88,14 @@ namespace mxl::lib::fabrics::ofi
         --_pending;
     }
 
+    void RMAGrainEgressProtocol::processCompletionError(Completion::Error const&)
+    {
+        if (_pending > 0)
+        {
+            --_pending;
+        }
+    }
+
     bool RMAGrainEgressProtocol::hasPendingWork() const
     {
         return _pending > 0;
@@ -211,6 +219,14 @@ namespace mxl::lib::fabrics::ofi
     void RMASampleEgressProtocol::processCompletion(Completion::Data const&)
     {
         --_pending;
+    }
+
+    void RMASampleEgressProtocol::processCompletionError(Completion::Error const&)
+    {
+        if (_pending > 0)
+        {
+            --_pending;
+        }
     }
 
     bool RMASampleEgressProtocol::hasPendingWork() const
