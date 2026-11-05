@@ -127,6 +127,15 @@ namespace mxl::lib::fabrics::ofi
         static void copySamples(DataLayout::Continuous const& layout, std::uint64_t headIndex, std::size_t count, LocalRegion const& region,
             std::uint8_t* dst);
 
+        /** \brief Size of the staging copy of a target's bounce buffer, validated against what the target reported.
+         * \throws Exception::invalidArgument if the geometry is empty, inconsistent or larger than MaxStagingSize.
+         */
+        static std::size_t stagingSize(TargetInfo const& info, std::size_t entryCount);
+
+        /** \brief Upper bound on the staging copy of one target's bounce buffer, in bytes.
+         */
+        constexpr static auto MaxStagingSize = std::size_t{256} * 1024 * 1024;
+
     private:
         Completion::Token _token;
         TargetInfo _remoteInfo;
