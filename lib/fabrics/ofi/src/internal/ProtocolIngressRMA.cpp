@@ -36,11 +36,15 @@ namespace mxl::lib::fabrics::ofi
         return std::nullopt;
     }
 
-    void RMAGrainIngressProtocol::start(Endpoint const& endpoint)
+    void RMAGrainIngressProtocol::start(Endpoint const& endpoint, std::size_t receiveCount)
     {
         if (endpoint.domain()->usingRecvBufForCqData())
         {
-            endpoint.recv(immDataRegion());
+            // Every write with immediate data consumes one posted receive and places no data in its buffer, so one buffer backs all of them.
+            for (auto i = std::size_t{0}; i < receiveCount; ++i)
+            {
+                endpoint.recv(immDataRegion());
+            }
         }
     }
 
@@ -126,11 +130,15 @@ namespace mxl::lib::fabrics::ofi
         return TargetInfoBounceBufferInfo{.entryCount = entryCount, .entrySize = entrySize};
     }
 
-    void RMASampleIngressProtocol::start(Endpoint const& endpoint)
+    void RMASampleIngressProtocol::start(Endpoint const& endpoint, std::size_t receiveCount)
     {
         if (endpoint.domain()->usingRecvBufForCqData())
         {
-            endpoint.recv(immDataRegion());
+            // Every write with immediate data consumes one posted receive and places no data in its buffer, so one buffer backs all of them.
+            for (auto i = std::size_t{0}; i < receiveCount; ++i)
+            {
+                endpoint.recv(immDataRegion());
+            }
         }
     }
 

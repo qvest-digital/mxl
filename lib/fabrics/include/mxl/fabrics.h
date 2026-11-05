@@ -203,7 +203,8 @@ extern "C"
      * corresponds to the one that will be written to by the initiator.
      * \param in_options An optional json-formatted string with options. May be NULL or empty. Recognized fields:
      *  - "cqDepth" (number >= 1): the depth of the target's completion queue. Increase this for high-frame-rate or many-stream
-     *    receivers, or when per-completion processing is slow, to avoid completion queue overflow. See the "Receiving grains" section
+     *    receivers, or when per-completion processing is slow, to avoid completion queue overflow. On providers that deliver immediate
+     *    data into posted receives, it is also the number of receives a connected target keeps posted. See the "Receiving grains" section
      *    of docs/Fabrics.md. When omitted, an implementation default is used.
      * \param out_info An mxlFabricsTargetInfo_t object which should be shared to a remote initiator which this target should receive data from. The
      * object must be freed with mxlFabricsFreeTargetInfo(). The address in it stays valid until the target is destroyed. A connection-oriented
